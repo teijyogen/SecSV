@@ -121,6 +121,7 @@ class HESV:
     def eval(self, model_paras):
         context = self.context
         model_paras = model_paras
+        # encrypted_data_list = self.encrypted_data_list
         encrypted_data_list = self.encrypted_data_list
         correct_nb = 0
         sec_model = self.hemodel
@@ -129,6 +130,7 @@ class HESV:
         sec_model.init_model_paras(context, model_paras)
 
         pbar = tqdm(encrypted_data_list, mininterval=60)
+        # pbar = tqdm(encrypted_data_list)
         # pbar = encrypted_data_list
         for (enc_features, enc_truth, size) in pbar:
             if size != sec_model.image_nb:
@@ -218,9 +220,10 @@ class HESV:
         self.init_accs[0] = correct_nb / self.test_size
         # self.init_accs[0] = 0.1
 
-        # model = torch.load("model/mnist/iid/cnn1/rnd9/global.pkl")
+        # model = torch.load("model/mnist_logi/iid/0/rnd9/global.pkl")
         # model_paras = model.state_dict()
         # correct_nb = self.eval(model_paras)
+        # print(correct_nb / self.test_size)
 
         if self.measure_time:
             self.time_dict["total"] += time.process_time() - start
@@ -279,11 +282,11 @@ class HESV:
 
 if __name__ == '__main__':
     clients = Clients()
-    clients.dirs = "data/mnist_cnn1/iid/0/"
+    clients.dirs = "data/mnist_logi/iid/0/"
     clients.load("clients.data")
 
-    sveval = HESV(clients, HE_CNN1_MNIST())
-    # sveval.input_shape = (-1, 784)
-    # sveval.batch_size = 784
+    sveval = HESV(clients, HE_Logi_MNIST())
+    sveval.input_shape = (-1, 784)
+    sveval.batch_size = 392
     sveval.sv_eval_mul_rnds_rparallel()
     # sveval.save_stat("cnn1_mnist_iid_he.json")

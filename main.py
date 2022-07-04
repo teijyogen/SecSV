@@ -1,174 +1,83 @@
 from client import *
 from hesv import *
 from securesv import *
-from tqdm import tqdm
 
 if __name__ == '__main__':
 
-    for run in tqdm(range(0, 10)):
-        dirs = "data/mnist_cnn1/iid/%s/" % (run)
-        print("\n-----------------------------------")
-        print("\n-----------------------------------")
-        print(dirs)
-        clients = Clients()
-        clients.dirs = dirs
-        clients.load("clients.data")
+    for run in tqdm(range(5, 10)):
+        for dist in ["iid", "dir0.5"]:
+            dirs = "data/mnist_cnn1/%s/%s/" % (dist, run)
+            print("\n-----------------------------------")
+            print("\n-----------------------------------")
+            print(dirs)
+            clients = Clients()
+            clients.dirs = dirs
+            clients.load("clients.data")
 
-        print("\n-----------------------------------")
-        print("\nSecSV")
-        sveval = SecSV(clients, Sec_CNN1_MNIST())
-        sveval.skip = False
-        # sveval.input_shape = (-1, 784)
-        # sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("secsv.json")
-        del sveval
+            print("\n-----------------------------------")
+            print("\nSecSV")
+            sveval = SecSV(clients, Sec_CNN1_MNIST())
+            sveval.sv_eval_mul_rnds_rparallel()
+            sveval.dirs = clients.dirs
+            sveval.save_stat("secsv_.json", skip=False)
+            sveval.save_stat("secsv_skip_.json", skip=True)
+            del sveval
 
-        print("\n-----------------------------------")
-        print("\nSecSV+SampleSkip")
-        sveval = SecSV(clients, Sec_CNN1_MNIST())
-        sveval.skip = True
-        # sveval.input_shape = (-1, 784)
-        # sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("secsv_skip.json")
-        del sveval
+            print("\n-----------------------------------")
+            print("\nSecSV + Permutation Sampling")
+            sveval = SecSVPerm(clients, Sec_CNN1_MNIST(), 0.25, 0.1)
+            sveval.sv_eval_mul_rnds_rparallel()
+            sveval.dirs = clients.dirs
+            sveval.save_stat("secsv_ps.json", skip=False)
+            sveval.save_stat("secsv_ps_skip.json", skip=True)
+            del sveval
 
-        print("\n-----------------------------------")
-        print("\nHESV")
-        sveval = HESV(clients, HE_CNN1_MNIST())
-        # sveval.input_shape = (-1, 784)
-        # sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("hesv.json")
-        del sveval
-        del clients
+            print("\n-----------------------------------")
+            print("\nSecSV + Group Testing")
+            sveval = SecSVGroupTesting(clients, Sec_CNN1_MNIST(), 0.25, 0.1)
+            sveval.sv_eval_mul_rnds_rparallel()
+            sveval.dirs = clients.dirs
+            sveval.save_stat("secsv_gt.json", skip=False)
+            sveval.save_stat("secsv_gt_skip.json", skip=True)
+            del sveval
 
+            dirs = "data/mnist_logi/%s/%s/" % (dist, run)
+            print("\n-----------------------------------")
+            print("\n-----------------------------------")
+            print(dirs)
+            clients = Clients()
+            clients.dirs = dirs
+            clients.load("clients.data")
 
-        dirs = "data/mnist_cnn1/dir0.5/%s/" % (run)
-        print("\n-----------------------------------")
-        print("\n-----------------------------------")
-        print(dirs)
-        clients = Clients()
-        clients.dirs = dirs
-        clients.load("clients.data")
+            print("\n-----------------------------------")
+            print("\nSecSV")
+            sveval = SecSV(clients, Sec_Logi_MNIST())
+            sveval.input_shape = (-1, 784)
+            sveval.batch_size = 392
+            sveval.sv_eval_mul_rnds_rparallel()
+            sveval.dirs = clients.dirs
+            sveval.save_stat("secsv_.json", skip=False)
+            sveval.save_stat("secsv_skip_.json", skip=True)
+            del sveval
 
-        print("\n-----------------------------------")
-        print("\nSecSV")
-        sveval = SecSV(clients, Sec_CNN1_MNIST())
-        sveval.skip = False
-        # sveval.input_shape = (-1, 784)
-        # sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("secsv.json")
-        del sveval
+            print("\n-----------------------------------")
+            print("\nSecSV + Permutation Sampling")
+            sveval = SecSVPerm(clients, Sec_Logi_MNIST(), 0.25, 0.1)
+            sveval.input_shape = (-1, 784)
+            sveval.batch_size = 392
+            sveval.sv_eval_mul_rnds_rparallel()
+            sveval.dirs = clients.dirs
+            sveval.save_stat("secsv_ps.json", skip=False)
+            sveval.save_stat("secsv_ps_skip.json", skip=True)
+            del sveval
 
-        print("\n-----------------------------------")
-        print("\nSecSV+SampleSkip")
-        sveval = SecSV(clients, Sec_CNN1_MNIST())
-        sveval.skip = True
-        # sveval.input_shape = (-1, 784)
-        # sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("secsv_skip.json")
-        del sveval
-
-        print("\n-----------------------------------")
-        print("\nHESV")
-        sveval = HESV(clients, HE_CNN1_MNIST())
-        # sveval.input_shape = (-1, 784)
-        # sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("hesv.json")
-        del sveval
-        del clients
-
-
-        dirs = "data/mnist_logi/iid/%s/" % (run)
-        print("\n-----------------------------------")
-        print("\n-----------------------------------")
-        print(dirs)
-        clients = Clients()
-        clients.dirs = dirs
-        clients.load("clients.data")
-
-        print("\n-----------------------------------")
-        print("\nSecSV")
-        sveval = SecSV(clients, Sec_Logi_MNIST())
-        sveval.skip = False
-        sveval.input_shape = (-1, 784)
-        sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("secsv.json")
-        del sveval
-
-        print("\n-----------------------------------")
-        print("\nSecSV+SampleSkip")
-        sveval = SecSV(clients, Sec_Logi_MNIST())
-        sveval.skip = True
-        sveval.input_shape = (-1, 784)
-        sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("secsv_skip.json")
-        del sveval
-
-        print("\n-----------------------------------")
-        print("\nHESV")
-        sveval = HESV(clients, HE_Logi_MNIST())
-        sveval.input_shape = (-1, 784)
-        sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("hesv.json")
-        del sveval
-        del clients
-
-
-        dirs = "data/mnist_logi/dir0.5/%s/" % (run)
-        print("\n-----------------------------------")
-        print("\n-----------------------------------")
-        print(dirs)
-        clients = Clients()
-        clients.dirs = dirs
-        clients.load("clients.data")
-
-        print("\n-----------------------------------")
-        print("\nSecSV")
-        sveval = SecSV(clients, Sec_Logi_MNIST())
-        sveval.skip = False
-        sveval.input_shape = (-1, 784)
-        sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("secsv.json")
-        del sveval
-
-        print("\n-----------------------------------")
-        print("\nSecSV+SampleSkip")
-        sveval = SecSV(clients, Sec_Logi_MNIST())
-        sveval.skip = True
-        sveval.input_shape = (-1, 784)
-        sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("secsv_skip.json")
-        del sveval
-
-        print("\n-----------------------------------")
-        print("\nHESV")
-        sveval = HESV(clients, HE_Logi_MNIST())
-        sveval.input_shape = (-1, 784)
-        sveval.batch_size = 784
-        sveval.sv_eval_mul_rnds_rparallel()
-        sveval.dirs = clients.dirs
-        sveval.save_stat("hesv.json")
-        del sveval
-        del clients
+            print("\n-----------------------------------")
+            print("\nSecSV + Group Testing")
+            sveval = SecSVGroupTesting(clients, Sec_Logi_MNIST(), 0.25, 0.1)
+            sveval.input_shape = (-1, 784)
+            sveval.batch_size = 392
+            sveval.sv_eval_mul_rnds_rparallel()
+            sveval.dirs = clients.dirs
+            sveval.save_stat("secsv_gt.json", skip=False)
+            sveval.save_stat("secsv_gt_skip.json", skip=True)
+            del sveval

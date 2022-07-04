@@ -260,6 +260,59 @@ def logi_niid_cifar(alpha=0.5, run=0):
     fl.mul_rnds_fl(clients)
 
 
+
+def cnn1_iid_mnist_lr(lr=0.001, run=0):
+
+    fl = FL(CNN1_MNIST(), dirs="model/mnist_cnn1/iid_lr%.4f/%s/" % (lr, run))
+
+    train_data, test_data, indices_train_ls, indices_test_ls = get_mnist_iid(fl.n_clients)
+
+    clients = Clients()
+    clients.dirs = "data/mnist_cnn1/iid_lr%.4f/%s/" % (lr, run)
+    clients.filename = "clients.data"
+    clients.generate_clients("MNIST", indices_train_ls, indices_test_ls)
+
+    fl.mul_rnds_fl(clients)
+
+def logi_iid_mnist_lr(lr=0.001, run=0):
+
+    fl = FL(Logistic(784, 10), dirs="model/mnist_logi/iid_lr%.4f/%s/" % (lr, run))
+    fl.input_shape = (-1, 784)
+
+    clients = Clients()
+    clients.dirs = "data/mnist_cnn1/iid_lr%.4f/%s/" % (lr, run)
+    clients.load("clients.data")
+    clients.dirs = "data/mnist_logi/iid_lr%.4f/%s/" % (lr, run)
+
+    fl.mul_rnds_fl(clients)
+
+
+def cnn2_iid_cifar_lr(lr=0.001, run=0):
+
+    fl = FL(CNN2_CIFAR(), dirs="model/cifar_cnn2/iid_lr%.4f/%s/" % (lr, run))
+    fl.input_shape = (-1, 3, 32, 32)
+
+    train_data, test_data, indices_train_ls, indices_test_ls = get_cifar_iid(fl.n_clients)
+
+    clients = Clients()
+    clients.dirs = "data/cifar_cnn2/iid_lr%.4f/%s/" % (lr, run)
+    clients.filename = "clients.data"
+    clients.generate_clients("CIFAR", indices_train_ls, indices_test_ls)
+
+    fl.mul_rnds_fl(clients)
+
+def logi_iid_cifar_lr(lr=0.001, run=0):
+
+    fl = FL(Logistic(3072, 10), dirs="model/cifar_logi/iid_lr%.4f/%s/" % (lr, run))
+    fl.input_shape = (-1, 3072)
+
+    clients = Clients()
+    clients.dirs = "data/cifar_cnn2/iid_lr%.4f/%s/" % (lr, run)
+    clients.load("clients.data")
+    clients.dirs = "data/cifar_logi/iid_lr%.4f/%s/" % (lr, run)
+
+    fl.mul_rnds_fl(clients)
+
 def mnist_alpha(run):
     cnn1_iid_mnist(run)
     logi_iid_mnist(run)
@@ -274,10 +327,19 @@ def cifar_alpha(run):
         cnn2_niid_cifar(alpha=alpha, run=run)
         logi_niid_cifar(alpha=alpha, run=run)
 
+def mnist_lr(run):
+    for lr in tqdm([0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001]):
+        cnn1_iid_mnist_lr(lr=lr, run=run)
+        logi_iid_mnist_lr(lr=lr, run=run)
+
+def cifar_lr(run):
+    for lr in tqdm([0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001]):
+        cnn2_iid_cifar_lr(lr=lr, run=run)
+        logi_iid_cifar_lr(lr=lr, run=run)
 
 if __name__ == '__main__':
 
-    pool = mp.Pool(10)
+    pool = mp.Pool(5)
 
     workers = []
     for run in range(10):

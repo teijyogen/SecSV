@@ -14,6 +14,9 @@ import copy
 import random
 from collections import Counter
 from random128 import random128
+import tenseal.sealapi as sealapi
+import gc
+
 
 class HybridModel:
     def __init__(self, gamma1=16, gamma2=111):
@@ -61,13 +64,11 @@ class HybridModel:
             square_mat = np.zeros((mat_len, mat_len))
 
             if nrows < ncols:
-                # mat_nb = subdim
                 for i in range(int(mat_len / subdim)):
                     for j in range(subdim):
                         for k in range(mat_len):
                             square_mat[i * subdim + j, k] = matrix[j, k]
             else:
-                # mat_nb = mat_len
                 for i in range(int(mat_len / subdim)):
                     for j in range(subdim):
                         for k in range(mat_len):
@@ -118,7 +119,7 @@ class HybridModel:
 
         return enc_channels
 
-    def encrypt_fc(self, fc_weight, fc_bias, channel_nb):
+    def encrypt_fc(self, fc_weight, fc_bias, channel_nb, mat_len):
         enc_channels = []
         chunk_size = int(fc_weight.shape[1] / channel_nb)
         for c in range(channel_nb):
@@ -126,7 +127,11 @@ class HybridModel:
             # print(weight.shape)
             enc_channels.append(self.enc_perm_mats(weight, weight.shape[0], left=True))
 
-        rep_bias = fc_bias.view(-1, 1).repeat(1, self.image_nb)
+        # rep_bias = fc_bias.view(-1, 1).repeat(1, self.image_nb)
+        fc_bias = fc_bias.view(-1, 1)
+        subdim = fc_bias.shape[0]
+        rep_bias = torch.zeros([mat_len, mat_len])
+        rep_bias[:subdim, :self.image_nb] = fc_bias.repeat(1, self.image_nb)
         enc_bias = self.encrypt(rep_bias.view(-1))
         enc_bias = self.send_enc_vector(enc_bias, nb_receviers=2)
 
@@ -145,13 +150,11 @@ class HybridModel:
             square_mat = np.zeros((mat_len, mat_len))
 
             if nrows < ncols:
-                # mat_nb = subdim
                 for i in range(int(mat_len / subdim)):
                     for j in range(subdim):
                         for k in range(mat_len):
                             square_mat[i * subdim + j, k] = matrix[j, k]
             else:
-                # mat_nb = mat_len
                 for i in range(int(mat_len / subdim)):
                     for j in range(subdim):
                         for k in range(mat_len):
@@ -187,33 +190,23 @@ class HybridModel:
         for i in range(1, subdim):
             enc_y += mat1_ls[i] * mat2_ls[i]
 
-        if subdim == mat_len and mat_len == self.image_nb:
-            return enc_y
-
         if subdim < mat_len:
-            # enc_y = self.send_enc_vector(enc_y)
-            # y = self.decrypt(enc_y).reshape(mat_len, mat_len)
-            y = np.array(enc_y.decrypt()).reshape(mat_len, mat_len)
-            true_y = copy.deepcopy(y)[0*subdim:(0+1)*subdim, :]
-            for j in range(1, int(mat_len/subdim)):
-                true_y += y[j*subdim:(j+1)*subdim, :]
-            true_y = true_y[:, :self.image_nb]
-            # for k in range(int(math.log(mat_len / subdim))):
-            #     true_y = true_y + torch.roll(true_y, -subdim * 2 ** k, 0)
-            # true_y = true_y[:subdim, :self.image_nb]
-            # enc_y = self.encrypt(true_y.reshape(-1))
-            # enc_y = self.send_enc_vector(enc_y)
-            enc_y = ts.ckks_vector(self.context, true_y.reshape(-1))
-        else:
-            # enc_y = self.send_enc_vector(enc_y)
-            # true_y = self.decrypt(enc_y).reshape(mat_len, mat_len)
-            true_y = np.array(enc_y.decrypt()).reshape(mat_len, mat_len)
-            true_y = true_y[:, :self.image_nb]
-            # enc_y = self.encrypt(true_y.reshape(-1))
-            # enc_y = self.send_enc_vector(enc_y)
-            enc_y = ts.ckks_vector(self.context, true_y.reshape(-1))
+            double_times = int(math.log(mat_len / subdim, 2))
 
-        return enc_y
+            if double_times > 0:
+                result = enc_y + enc_y.rotate_vector(mat_len * subdim * 2 ** 0)
+                for k in range(1, double_times):
+                    result += result.rotate_vector(mat_len * subdim * 2 ** k)
+            else:
+                result = 0
+
+            result += enc_y.rotate_vector_inplace(2 ** double_times * mat_len * subdim)
+            for j in range(2 ** double_times + 1, int(mat_len / subdim)):
+                result += enc_y.rotate_vector_inplace(mat_len * subdim)
+
+            return result
+        else:
+            return enc_y
 
     def sec_conv(self, enc_conv, shares):
         enc_y_channel = []
@@ -376,8 +369,9 @@ class HybridModel:
         return recovered_secret.astype(np.float32)
 
     def predict(self, enc_y, output_size):
-        enc_y = self.send_enc_vector(enc_y)
-        y = self.decrypt(enc_y).reshape(output_size, self.image_nb)
+        y = self.decrypt(enc_y)
+        mat_len = int(y.shape[0] ** 0.5)
+        y = y.reshape(mat_len, mat_len)[:output_size, :self.image_nb]
         output = self.remainder(y)
 
         pred = np.argmax(output, axis=0)
@@ -406,6 +400,7 @@ class HybridModel:
 
         return correct_idxs
 
+
 class Sec_CNN1_MNIST(HybridModel):
     def __init__(self, image_nb=64):
         super(Sec_CNN1_MNIST, self).__init__()
@@ -421,7 +416,7 @@ class Sec_CNN1_MNIST(HybridModel):
 
         self.fc1_output_size = 64
         self.fc2_output_size = 10
-        
+
         self.context = None
         self.enc_conv1 = None
         self.enc_fc1 = None
@@ -430,8 +425,8 @@ class Sec_CNN1_MNIST(HybridModel):
     def init_model_paras(self, context, model_paras):
         self.context = context
         self.enc_conv1 = self.encrypt_conv(model_paras["conv1.weight"], model_paras["conv1.bias"], self.conv1_kernel_len, self.conv1_windows_nb)
-        self.enc_fc1 = self.encrypt_fc(model_paras["fc1.weight"], model_paras["fc1.bias"], self.conv1_channel_nb)
-        self.enc_fc2 = self.encrypt_fc(model_paras["fc2.weight"], model_paras["fc2.bias"], 1)
+        self.enc_fc1 = self.encrypt_fc(model_paras["fc1.weight"], model_paras["fc1.bias"], self.conv1_channel_nb, self.conv1_windows_nb)
+        self.enc_fc2 = self.encrypt_fc(model_paras["fc2.weight"], model_paras["fc2.bias"], 1, self.fc1_output_size)
 
     def clear_model_paras(self):
         self.context = None
@@ -454,7 +449,8 @@ class Sec_CNN1_MNIST(HybridModel):
         if channel:
             plain_x = []
             for i in range(len(enc_y)):
-                y = self.decrypt(enc_y[i]).reshape(n_rows, n_cols)
+                y = self.decrypt(enc_y[i])
+                y = y.reshape(n_rows, n_cols)
                 y = self.remainder(y)
                 squared_y = self.square_activate(y)
                 share1, share2 = self.generate_shares(squared_y)
@@ -468,7 +464,9 @@ class Sec_CNN1_MNIST(HybridModel):
                 mats_share2 = self.perm_mats(share2, mat_nb, left=False)
                 plain_x.append((mats_share1, mats_share2))
         else:
-            y = self.decrypt(enc_y).reshape(n_rows, n_cols)
+            y = self.decrypt(enc_y)
+            mat_len = int(y.shape[0] ** 0.5)
+            y = y.reshape(mat_len, mat_len)[:n_rows, :n_cols]
             y = self.remainder(y)
             squared_y = self.square_activate(y)
             share1, share2 = self.generate_shares(squared_y)
@@ -516,21 +514,93 @@ class Sec_Logi_MNIST(HybridModel):
         self.context = None
         self.enc_fc = None
 
+    def enc_perm_mats(self, matrix, left=True):
+
+        if left:
+            mat_nb = matrix.shape[1]
+            mat = sigma(matrix)
+            enc_mat = self.encrypt(mat[:, :self.image_nb].reshape(-1))
+            enc_mat = self.send_enc_vector(enc_mat, nb_receviers=2)
+            enc_mats = [enc_mat]
+
+            for i in range(1, mat_nb):
+                mat = phi(mat)
+                enc_mat = self.encrypt(mat[:, :self.image_nb].reshape(-1))
+                enc_mat = self.send_enc_vector(enc_mat, nb_receviers=2)
+                enc_mats.append(enc_mat)
+        else:
+            mat_nb = matrix.shape[0]
+            mat = tau(matrix)
+            enc_mat = self.encrypt(mat.reshape(-1))
+            enc_mat = self.send_enc_vector(enc_mat, nb_receviers=2)
+            enc_mats = [enc_mat]
+
+            for i in range(1, mat_nb):
+                mat = psi(mat)
+                enc_mat = self.encrypt(mat.reshape(-1))
+                enc_mat = self.send_enc_vector(enc_mat, nb_receviers=2)
+                enc_mats.append(enc_mat)
+
+        return enc_mats
+
+    def encrypt_fc(self, fc_weight, fc_bias):
+        enc_mats = self.enc_perm_mats(fc_weight, left=True)
+
+        rep_bias = fc_bias.view(-1, 1).repeat(1, self.image_nb)
+        enc_bias = self.encrypt(rep_bias.view(-1))
+        enc_bias = self.send_enc_vector(enc_bias, nb_receviers=2)
+
+        return enc_mats, enc_bias
+
     def init_model_paras(self, context, model_paras):
         self.context = context
-        self.enc_fc = self.encrypt_fc(model_paras["linear.weight"], model_paras["linear.bias"], 1)
+        self.enc_fc = self.encrypt_fc(model_paras["linear.weight"], model_paras["linear.bias"])
 
     def clear_model_paras(self):
         self.context = None
         self.enc_fc = None
 
     def pre_process_input(self, x):
-        x = x.T.reshape(self.input_size, self.image_nb)
-        result = self.perm_mats(x, self.fc_output_size, left=False)
-        return result
+        inputs = x.T
+        mat_nb = inputs.shape[0]
+        rotated = tau(inputs)
+        rotated_ls = [ts.plain_tensor(rotated[:self.fc_output_size, :].reshape(-1))]
+        for i in range(1, mat_nb):
+            rotated = psi(rotated)
+            rotated_ls.append(ts.plain_tensor(rotated[:self.fc_output_size, :].reshape(-1)))
+
+        # gc.collect()
+        return rotated_ls
+
+    def rmatmul(self, enc_weights, inputs):
+        enc_y = enc_weights[0] * inputs[0]
+        for i in range(1, len(enc_weights)):
+            enc_y += enc_weights[i] * inputs[i]
+
+        return enc_y
+
+    def sec_fc(self, enc_fc, x_shares):
+        enc_wts, enc_bias = enc_fc
+
+        if self.measure_time:
+            start = time.process_time()
+        enc_y_share1 = self.rmatmul(enc_wts, x_shares[0])
+        if self.measure_time:
+            self.time_dict["total"] -= time.process_time() - start
+
+        enc_y_share1 = self.send_enc_vector(enc_y_share1)
+
+        if self.measure_time:
+            start = time.process_time()
+        enc_y_share2 = self.rmatmul(enc_wts, x_shares[1])
+        enc_y = enc_y_share1 + enc_y_share2 + enc_bias
+        if self.measure_time:
+            self.time_dict["HE computation"] += time.process_time() - start
+
+        return enc_y
 
     def sigmoid_predict(self, enc_y):
-        y = self.decrypt(enc_y).reshape(self.fc_output_size, self.image_nb)
+        y = self.decrypt(enc_y)
         y = self.remainder(y)
 
         if self.measure_time:
@@ -539,7 +609,7 @@ class Sec_Logi_MNIST(HybridModel):
         if self.measure_time:
             self.time_dict["activation"] += time.process_time() - start
 
-        pred = np.argmax(y, axis=0)
+        pred = np.argmax(y.reshape(-1, self.image_nb), axis=0)
 
         share1, share2 = self.generate_shares(pred)
 

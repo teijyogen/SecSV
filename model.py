@@ -14,13 +14,78 @@ class CNN1_MNIST(nn.Module):
 
     def forward(self, x):
         x = self.conv1(x)
+        # print(x[0, 0, :, :].reshape(1, 8, 8))
+        # print("----------------------------------")
+        # the model uses the square activation function
         x = x * x
+        # flattening while keeping the batch axis
         x = x.view(-1, 256)
         x = self.fc1(x)
+        # print(x.shape)
+        # print(x)
+        # print("----------------------------------")
         x = x * x
         x = self.fc2(x)
         return x
 
+
+# class CNN2_MNIST(nn.Module):
+#     def __init__(self):
+#         super(CNN2_MNIST, self).__init__()
+#         self.conv1 = nn.Conv2d(1, 16, kernel_size=5, padding=0, stride=1)
+#         self.relu = nn.ReLU()
+#         self.maxpool = nn.MaxPool2d((2, 2))
+#         self.conv2 = nn.Conv2d(16, 16, kernel_size=5, padding=0, stride=1)
+#         self.fc1 = nn.Linear(256, 100)
+#         self.fc2 = nn.Linear(100, 10)
+#
+#     def forward(self, x):
+#         x = self.conv1(x).view(-1, 16, 24, 24)
+#         x = self.relu(x)
+#         x = self.maxpool(x).view(-1, 16, 12, 12)
+#         x = self.conv2(x).view(-1, 16, 64)
+#         x = self.relu(x)
+#         x = self.maxpool(x).view(-1, 256)
+#         x = self.fc1(x)
+#         x = self.relu(x)
+#         x = self.fc2(x)
+#
+#         return x
+
+# class CNN2_CIFAR(nn.Module):
+#     def __init__(self):
+#         super(CNN2_CIFAR, self).__init__()
+#         self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1, stride=1)
+#         self.relu = nn.ReLU()
+#         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1, stride=1)
+#         self.pool = nn.AvgPool2d((2, 2))
+#         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1, stride=1)
+#         self.conv4 = nn.Conv2d(64, 64, kernel_size=3, padding=1, stride=1)
+#         self.conv5 = nn.Conv2d(64, 64, kernel_size=3, padding=1, stride=1)
+#         self.conv6 = nn.Conv2d(64, 64, kernel_size=1, stride=1)
+#         self.conv7 = nn.Conv2d(64, 16, kernel_size=1, stride=1)
+#         self.fc = nn.Linear(1024, 10)
+#
+#     def forward(self, x):
+#         x = self.conv1(x)
+#         x = self.relu(x)
+#         x = self.conv2(x)
+#         x = self.relu(x)
+#         x = self.pool(x)
+#         x = self.conv3(x)
+#         x = self.relu(x)
+#         x = self.conv4(x)
+#         x = self.relu(x)
+#         x = self.pool(x)
+#         x = self.conv5(x)
+#         x = self.relu(x)
+#         x = self.conv6(x)
+#         x = self.relu(x)
+#         x = self.conv7(x)
+#         x = self.relu(x).view(-1, 1024)
+#         x = self.fc(x)
+#
+#         return x
 
 class CNN2_CIFAR(nn.Module):
     def __init__(self):
@@ -35,7 +100,7 @@ class CNN2_CIFAR(nn.Module):
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1)
+        x = torch.flatten(x, 1) # flatten all dimensions except batch
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)

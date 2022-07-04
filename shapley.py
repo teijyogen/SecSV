@@ -1,5 +1,7 @@
 import itertools
 import math
+import cvxpy as cp
+import numpy as np
 
 
 def make_all_subsets(list_of_members):
@@ -27,10 +29,9 @@ class ShapleyValue:
         self.list_of_members = frozenset(list_of_members)
         if len(self.mu) < 1:
             return
-        self.calculate_svs()
 
     def calculate_svs(self):
-        print("*************")
+        # print("*************")
         memberShapley = 0
         total = 0
         factorialTotal = math.factorial(len(self.list_of_members))
@@ -48,11 +49,57 @@ class ShapleyValue:
                     weightValue = divisor * difference
                     memberShapley = memberShapley + weightValue
             self.svs[member] = memberShapley
-            print("Shapley Value of Client " + str(member) + ": " + str(memberShapley))
+            # print("Shapley Value of Client " + str(member) + ": " + str(memberShapley))
             total = total + memberShapley
             memberShapley = 0
-        print("Total: " + str(total))
-        print("*************")
+        # print("Total: " + str(total))
+        # print("*************")
+
+    def calculate_svs_perm(self, perm_ls):
+
+        sv_dict = {member: .0 for member in self.list_of_members}
+        for perm in perm_ls:
+            u_pre = self.mu.get(frozenset())
+            for i in range(len(perm)):
+                member = perm[i]
+                sv_dict[member] = sv_dict[member] + (self.mu.get(frozenset(perm[:i+1])) - u_pre) / len(perm_ls)
+                u_pre = self.mu.get(frozenset(perm[:i+1]))
+
+        self.svs = sv_dict.copy()
+
+    def calculate_svs_group_testing(self, beta_mat, model_subsets_ls, params):
+        beta_mat = np.array(beta_mat)
+        N = len(self.list_of_members)
+        T = beta_mat.shape[0]
+
+        tiled_beta_mat = np.tile(beta_mat, (1, N)).reshape((T, N, N))
+        transposed_tiled_beta_mat = np.transpose(tiled_beta_mat, (0, 2, 1))
+
+        diff_beta_mat = transposed_tiled_beta_mat - tiled_beta_mat
+        utilities = np.array([self.mu[model_subsets_ls[t]] for t in range(T)]).reshape((T, 1, 1))
+        diff_u_mat = np.sum(utilities * diff_beta_mat, axis=0) * params["Z"] / T
+
+        svs_cvxpy = cp.Variable((N))
+        constraints = [cp.sum(svs_cvxpy) == params["Utot"]]
+        for i in range(N):
+            for j in range(i, N):
+                constraint = cp.abs(svs_cvxpy[i] - svs_cvxpy[j] - diff_u_mat[i, j]) <= params["epsi"] / (2 * N ** 0.5)
+                constraints.append(constraint)
+
+        objective = cp.Minimize(params["Utot"])
+        prob = cp.Problem(objective, constraints)
+        prob.solve()
+        svs = svs_cvxpy.value
+
+        i = 0
+        for member in sorted(self.list_of_members):
+            self.svs[member] = svs[0]
+            i += 1
+
+
+
+
+
 
 # if __name__ == '__main__':
 
