@@ -32,7 +32,6 @@ class SecSV:
         self.clients = clients
         self.hybridmodel = hybridmodel
         self.test_data = torch.utils.data.ConcatDataset([clients.data[id].test_data() for id in clients.data.keys()])
-        self.batch_size = 64
         self.T = len(clients.selection_record)
         self.init_accs = {}
         self.ssv_dict = {}
@@ -41,11 +40,13 @@ class SecSV:
         self.msv_dict_skip = {}
         self.dirs = "data/"
         self.test_size = len(self.test_data)
-        self.input_shape = (-1, 28, 28)
-        self.measure_time = True
+        self.input_shape = hybridmodel.input_shape
         self.time_dict = {}
         self.time_dict_skip = {}
         self.init_time_dict()
+        self.acc_dict = {}
+        self.acc_dict_skip = {}
+        self.naive_dict = {}
         self.test_data_shares = []
         self.all_processed_shares = []
         self.remained_processed_shares = []
@@ -55,6 +56,10 @@ class SecSV:
         self.idx_set = set([i for i in range(self.test_size)])
         self.context = None
         self.context_bytes = None
+        self.poly_modulus_degree = 2 ** 13
+        self.n_slots = self.poly_modulus_degree // 2
+        self.hybridmodel.n_slots = self.n_slots
+        self.batch_size = self.hybridmodel.cal_optimal_batch_size(self.test_size)
 
     def init_time_dict(self):
         self.time_dict["total"] = 0.0
@@ -71,7 +76,7 @@ class SecSV:
         PREC = 23
         context = ts.context(
             ts.SCHEME_TYPE.CKKS,
-            poly_modulus_degree=2 ** 13,
+            poly_modulus_degree=self.poly_modulus_degree,
             coeff_mod_bit_sizes=[PREC + 9, PREC, PREC, PREC + 9]
         )
         context.global_scale = pow(2, PREC)
@@ -80,11 +85,11 @@ class SecSV:
         context_bytes_sk = context.serialize(save_secret_key=True)
         context_bytes = context.serialize(save_secret_key=False)
 
-        if self.measure_time:
-            self.time_dict["communication"] += communicate(context_bytes_sk) * (self.clients.size - 2) + communicate(context_bytes) * 2
+        self.time_dict["communication"] += communicate(context_bytes_sk) * (self.clients.size - 2) + communicate(context_bytes) * 2
 
         self.context = context
         self.context_bytes = context_bytes_sk
+        self.hybridmodel.n_slots = self.n_slots
 
     def secretly_share_data(self):
         print("\nSecretly share test data")
@@ -102,8 +107,7 @@ class SecSV:
                 # print(data_shares[0].shape)
                 truth_share1, truth_share2 = self.hybridmodel.generate_shares(target.numpy())
 
-                if self.measure_time:
-                    self.time_dict["communication"] += communicate(feature_share1) + communicate(feature_share2) + communicate(truth_share1) + communicate(truth_share2)
+                self.time_dict["communication"] += communicate(feature_share1) + communicate(feature_share2) + communicate(truth_share1) + communicate(truth_share2)
 
                 feature_share1_list.append(feature_share1)
                 feature_share2_list.append(feature_share2)
@@ -118,31 +122,46 @@ class SecSV:
 
     def shares_loader(self, indices="all"):
         if indices == "all":
-            indices = [i for i in range(self.test_size)]
+            indices = np.arange(0, self.test_size)
+            batch_size = self.batch_size
+        else:
+            batch_size = self.hybridmodel.cal_optimal_batch_size(len(indices))
 
-        batch_nb = math.ceil(len(indices) / self.batch_size)
+        batch_nb = math.ceil(len(indices) / batch_size)
         packed_feature_share1_ls = np.array_split(self.test_data_shares[0][indices], batch_nb)
         packed_feature_share2_ls = np.array_split(self.test_data_shares[1][indices], batch_nb)
         packed_truth_share1_ls = np.array_split(self.test_data_shares[2][indices], batch_nb)
         packed_truth_share2_ls = np.array_split(self.test_data_shares[3][indices], batch_nb)
+        indices_ls = np.array_split(indices, batch_nb)
+        max_size = packed_feature_share1_ls[0].shape[0]
+        self.hybridmodel.set_input_nb(max_size)
 
-        process_shares = []
+
+        processed_shares = []
         for i in range(batch_nb):
-            size = packed_feature_share1_ls[i].shape[0]
-            self.hybridmodel.image_nb = size
-            if self.measure_time:
-                start = time.process_time()
-            processed_feature_share1 = self.hybridmodel.pre_process_input(packed_feature_share1_ls[i])
-            if self.measure_time:
-                self.time_dict["total"] -= time.process_time() - start
-            processed_feature_share2 = self.hybridmodel.pre_process_input(packed_feature_share2_ls[i])
+            feature_share1 = packed_feature_share1_ls[i]
+            feature_share2 = packed_feature_share2_ls[i]
+            size = feature_share1.shape[0]
+            idxs = indices_ls[i]
+            # self.hybridmodel.input_nb = size
+            feature_share1 = feature_share1.reshape(size, -1)
+            feature_share1 = np.pad(feature_share1, ((0, max_size-size), (0, 0))).reshape(max_size, -1)
+            feature_share2 = feature_share2.reshape(size, -1)
+            feature_share2 = np.pad(feature_share2, ((0, max_size-size), (0, 0))).reshape(max_size, -1)
 
-            process_shares.append(((processed_feature_share1, processed_feature_share2), (packed_truth_share1_ls[i], packed_truth_share2_ls[i]), size))
+
+            start = time.process_time()
+            processed_feature_share1 = self.hybridmodel.preprocess_input(feature_share1)
+            self.time_dict["total"] -= time.process_time() - start
+
+            processed_feature_share2 = self.hybridmodel.preprocess_input(feature_share2)
+
+            processed_shares.append(((processed_feature_share1, processed_feature_share2), (packed_truth_share1_ls[i], packed_truth_share2_ls[i]), idxs))
 
         if len(indices) == self.test_size:
-            self.all_processed_shares = process_shares
+            self.all_processed_shares = processed_shares
         else:
-            self.remained_processed_shares = process_shares
+            self.remained_processed_shares = processed_shares
 
     def update_ssv(self, sv_dict, rnd, skip=False):
         for id in self.clients.data:
@@ -161,74 +180,84 @@ class SecSV:
         self.update_ssv(SV.svs, rnd, skip=skip)
 
     def update_msv(self, skip=False):
-        for id in self.clients.data:
-            msv = 0.0
-            for rnd in range(self.T):
-                msv += self.ssv_dict[rnd][id]
-            if skip:
+        if skip:
+            for id in self.clients.data:
+                msv = 0.0
+                for rnd in range(self.T):
+                    msv += self.ssv_dict_skip[rnd][id]
                 self.msv_dict_skip[id] = msv
-            else:
+        else:
+            for id in self.clients.data:
+                msv = 0.0
+                for rnd in range(self.T):
+                    msv += self.ssv_dict[rnd][id]
                 self.msv_dict[id] = msv
 
-    def calc_msv(self, rnds_acc_dict):
+    def calc_msv(self):
         if self.noskip:
-            if self.measure_time:
-                start = time.process_time()
+            start = time.process_time()
             for rnd in range(self.T):
-                self.calc_ssv(rnds_acc_dict[rnd][0], rnd, skip=False)
+                self.calc_ssv(self.acc_dict[rnd], rnd, skip=False)
             self.update_msv(skip=False)
-            if self.measure_time:
-                self.time_dict["total"] += time.process_time() - start + self.time_dict["communication"]
-                print("\nOverall time dict")
-                print(self.time_dict)
+            self.time_dict["total"] += time.process_time() - start + self.time_dict["communication"]
+            print("\nOverall time dict")
+            print(self.time_dict)
 
         if self.skip:
-            if self.measure_time:
-                start = time.process_time()
+            start = time.process_time()
             for rnd in range(self.T):
-                self.calc_ssv(rnds_acc_dict[rnd][1], rnd, skip=True)
+                self.calc_ssv(self.acc_dict_skip[rnd], rnd, skip=True)
             self.update_msv(skip=True)
-            if self.measure_time:
-                self.time_dict_skip["total"] += time.process_time() - start + self.time_dict_skip["communication"]
-                print("\nOverall time dict (skip)")
-                print(self.time_dict_skip)
+            self.time_dict_skip["total"] += time.process_time() - start + self.time_dict_skip["communication"]
+            print("\nOverall time dict (skip)")
+            print(self.time_dict_skip)
 
-    def update_time_dict_after_multiprocessing(self, workers):
-        if self.measure_time:
-            time_dicts = [worker.get()[0] for worker in workers]
-            time_dicts_skip = [worker.get()[1] for worker in workers]
-            self.time_dict_skip = self.time_dict.copy()
-            if self.noskip:
-                print("------------------------------------------")
-                print("\nTime consumed by each sub-process")
-                print(time_dicts)
-                incr_time_df = pd.DataFrame(time_dicts).sum()
-                print("\nTotal time consumed by sub-processes")
-                print(dict(incr_time_df))
-                self.time_dict = dict(pd.DataFrame([self.time_dict]).sum() + incr_time_df)
-                print("\nTime dict after evaluating all rounds")
-                print(self.time_dict)
-                print("------------------------------------------")
-            if self.skip:
-                print("------------------------------------------")
-                print("\nTime consumed by each sub-process (skip)")
-                print(time_dicts_skip)
-                incr_time_df = pd.DataFrame(time_dicts_skip).sum()
-                print("\nTotal time consumed by sub-processes (skip)")
-                print(dict(incr_time_df))
-                self.time_dict_skip = dict(pd.DataFrame([self.time_dict_skip]).sum() + incr_time_df)
-                print("\nTime dict after evaluating all rounds (skip)")
-                print(self.time_dict_skip)
-                print("------------------------------------------")
+    def update_dicts(self, workers):
+        time_dicts = []
+        time_dicts_skip = []
+        for rnd in range(self.T):
+            dicts = workers[rnd].get()
+            time_dicts.append(dicts[0][0])
+            time_dicts_skip.append(dicts[0][1])
+            self.acc_dict[rnd] = dicts[1][0]
+            self.acc_dict_skip[rnd] = dicts[1][1]
+            self.naive_dict[rnd] = dicts[2]
+
+        # time_dicts = [worker.get()[0][0] for worker in workers]
+        # time_dicts_skip = [worker.get()[0][1] for worker in workers]
+        self.time_dict_skip = self.time_dict.copy()
+        if self.noskip:
+            print("------------------------------------------")
+            print("\nTime consumed by each sub-process")
+            print(time_dicts)
+            incr_time_df = pd.DataFrame(time_dicts).sum()
+            print("\nTotal time consumed by sub-processes")
+            print(dict(incr_time_df))
+            self.time_dict = dict(pd.DataFrame([self.time_dict]).sum() + incr_time_df)
+            print("\nTime dict after evaluating all rounds")
+            print(self.time_dict)
+            print("------------------------------------------")
+        if self.skip:
+            print("------------------------------------------")
+            print("\nTime consumed by each sub-process (skip)")
+            print(time_dicts_skip)
+            incr_time_df = pd.DataFrame(time_dicts_skip).sum()
+            print("\nTotal time consumed by sub-processes (skip)")
+            print(dict(incr_time_df))
+            self.time_dict_skip = dict(pd.DataFrame([self.time_dict_skip]).sum() + incr_time_df)
+            print("\nTime dict after evaluating all rounds (skip)")
+            print(self.time_dict_skip)
+            print("------------------------------------------")
 
     def save_stat(self, filename, skip=False):
         if skip:
-            data = {"ssv": self.ssv_dict_skip, "msv": self.msv_dict_skip, "time": self.time_dict_skip}
+            data = {"test size": self.test_size, "time": self.time_dict_skip, "naive": self.naive_dict,
+                    "ssv": self.ssv_dict_skip, "msv": self.msv_dict_skip}
             with open(self.dirs+filename, "w") as f:
                 json.dump(data, f, indent=4)
             f.close()
         else:
-            data = {"ssv": self.ssv_dict, "msv": self.msv_dict, "time": self.time_dict}
+            data = {"test size": self.test_size, "time": self.time_dict, "ssv": self.ssv_dict, "msv": self.msv_dict}
             with open(self.dirs+filename, "w") as f:
                 json.dump(data, f, indent=4)
             f.close()
@@ -236,23 +265,19 @@ class SecSV:
     def eval(self, model_paras):
         context = self.context
         sec_model = self.hybridmodel
-        sec_model.image_nb = self.processed_shares[0][2]
-        sec_model.measure_time = self.measure_time
         sec_model.init_model_paras(context, model_paras)
 
         correct_ids_ls = []
-        # pbar = tqdm(self.processed_shares, mininterval=60)
+        pbar = tqdm(self.processed_shares, mininterval=60)
         # pbar = tqdm(self.processed_shares)
-        pbar = self.processed_shares
-        total_size = 0
-        for x_shares, truth_shares, size in pbar:
-            if size != sec_model.image_nb:
-                sec_model.image_nb = size
-                sec_model.init_model_paras(context, model_paras)
+        # pbar = self.processed_shares
+        for x_shares, truth_shares, idxs in pbar:
+            sec_model.truth_nb = idxs.shape[0]
+            # if size != sec_model.input_nb:
+            #     sec_model.input_nb = size
+            #     sec_model.init_model_paras(context, model_paras)
 
-            correct_ids = sec_model(x_shares, truth_shares) + total_size
-            total_size += size
-            # print(len(correct_ids) / size)
+            correct_ids = idxs[sec_model(x_shares, truth_shares)]
             correct_ids_ls.append(correct_ids)
 
         correct_ids = np.concatenate(correct_ids_ls)
@@ -264,15 +289,16 @@ class SecSV:
         self.context = ts.Context.load(self.context_bytes)
 
     def eval_init_model(self):
+        print("\nEvaluate the initial model")
         self.processed_shares = self.all_processed_shares
         init_model = torch.load(self.clients.init_model)
         model_paras = init_model.state_dict()
-        print("\nEvaluate the initial model")
         correct_ids = self.eval(model_paras)
         self.init_accs[0] = len(correct_ids) / self.test_size
         # self.init_accs[0] = 0.1
 
-        # model = torch.load("model/mnist_logi/iid/0/rnd9/global.pkl")
+        # model = torch.load("model/mnist_cnn1/dir0.5/0/rnd9/global.pkl")
+        # model = torch.load("model/cifar_cnn2/dir0.5/0/rnd9/global.pkl")
         # model_paras = model.state_dict()
         # correct_ids = self.eval(model_paras)
         # print(len(correct_ids)/self.test_size)
@@ -302,9 +328,11 @@ class SecSV:
 
         return correct_samples
 
-    def eval_utilities(self, subsets, correct_samples_dict, acc_dict, rnd, skip=False):
+    def eval_utilities(self, subsets, correct_samples_dict, acc_dict, rnd, naive_samples_dict={}, skip=False):
         clients = self.clients
-        self.processed_shares = self.all_processed_shares
+        if not skip:
+            self.hybridmodel.set_input_nb(self.batch_size)
+            self.processed_shares = self.all_processed_shares
         subset_ls = list(subsets)
         subset_ls.sort(key=lambda x:len(x), reverse=False)
         for subset in tqdm(subset_ls):
@@ -313,13 +341,15 @@ class SecSV:
                 # sub_correct_samples_dict = {key: value for key, value in correct_samples_dict.items() if key in subset}
                 # naive_samples = self.intersection_except(sub_correct_samples_dict, None)
                 naive_samples = self.find_skippable(subset, correct_samples_dict)
-                indices = list(self.idx_set - naive_samples)
+                naive_samples_dict[str(list(subset))] = len(naive_samples)
+                indices = np.array(list(self.idx_set - naive_samples))
 
                 if len(indices) == 0:
                     acc = len(naive_samples) / self.test_size
                     acc_dict[subset] = acc
                     continue
                 elif len(indices) == self.test_size:
+                    self.hybridmodel.set_input_nb(self.batch_size)
                     self.processed_shares = self.all_processed_shares
                 else:
                     self.shares_loader(indices)
@@ -331,21 +361,20 @@ class SecSV:
             aggr_model = FL.fedavg(model_ls, size_ls)
             model_paras = aggr_model.state_dict()
             correct_samples = self.eval(model_paras)
-            correct_samples_dict[subset] = correct_samples
+            correct_samples_dict[subset] = correct_samples.union(naive_samples)
             acc = (len(naive_samples) + len(correct_samples)) / self.test_size
             acc_dict[subset] = acc
 
-        return correct_samples_dict, acc_dict
+        return correct_samples_dict, acc_dict, naive_samples_dict
 
-    def sv_eval_one_rnd_rparallel(self, rnd, rnds_acc_dict):
+    def sv_eval_one_rnd_rparallel(self, rnd):
         self.recover_serialized_objects()
         self.init_time_dict()
         self.shares_loader()
         time_dict = self.time_dict.copy()
         self.hybridmodel.time_dict = time_dict
-        if self.measure_time:
-            start = time.process_time()
 
+        start = time.process_time()
         clients = self.clients
         acc_dict = {}
         correct_samples_dict = {}
@@ -355,68 +384,58 @@ class SecSV:
         aggr_subsets = [subset for subset in all_subsets if len(subset) > 1]
 
         self.eval_utilities(local_subsets, correct_samples_dict, acc_dict, rnd, skip=False)
-
-        if self.measure_time:
-            time_dict["total"] += time.process_time() - start
+        time_dict["total"] += time.process_time() - start
 
         acc_dict_skip = acc_dict.copy()
         correct_samples_dict_skip = correct_samples_dict.copy()
         time_dict_skip = time_dict.copy()
-
-        if self.skip:
-            self.hybridmodel.time_dict = time_dict_skip
-            if self.measure_time:
-                start = time.process_time()
-            self.eval_utilities(aggr_subsets, correct_samples_dict_skip, acc_dict_skip, rnd, skip=True)
-            rnds_acc_dict[rnd] = (acc_dict, acc_dict_skip)
-            if self.measure_time:
-                time_dict_skip["total"] += time.process_time() - start
+        naive_samples_dict = {}
 
         if self.noskip:
             self.hybridmodel.time_dict = time_dict
-            if self.measure_time:
-                start = time.process_time()
-            self.eval_utilities(aggr_subsets, correct_samples_dict, acc_dict, rnd, skip=False)
-            rnds_acc_dict[rnd] = (acc_dict, acc_dict_skip)
-            if self.measure_time:
-                time_dict["total"] += time.process_time() - start
 
-        return time_dict, time_dict_skip
+            start = time.process_time()
+            self.eval_utilities(aggr_subsets, correct_samples_dict, acc_dict, rnd, skip=False)
+            time_dict["total"] += time.process_time() - start
+
+        if self.skip:
+            self.hybridmodel.time_dict = time_dict_skip
+
+            start = time.process_time()
+            self.eval_utilities(aggr_subsets, correct_samples_dict_skip, acc_dict_skip, rnd, naive_samples_dict, skip=True)
+            time_dict_skip["total"] += time.process_time() - start
+
+        return (time_dict, time_dict_skip), (acc_dict, acc_dict_skip), naive_samples_dict
 
     def sv_eval_mul_rnds_rparallel(self):
-        if self.measure_time:
-            start = time.process_time()
 
+        start = time.process_time()
         self.init_context()
         self.secretly_share_data()
         self.shares_loader()
         self.eval_init_model()
-
-        if self.measure_time:
-            self.time_dict["total"] += time.process_time() - start
-            self.time_dict_skip = self.time_dict.copy()
-            print("\nTime dict after evaluating the init model")
-            print(self.time_dict)
+        self.time_dict["total"] += time.process_time() - start
+        self.time_dict_skip = self.time_dict.copy()
+        print("\nTime dict after evaluating the init model")
+        print(self.time_dict)
 
         self.context = None
         self.all_processed_shares = []
         self.processed_shares = []
-        manager = mp.Manager()
-        rnds_acc_dict = manager.dict()
         pool = mp.Pool(10)
 
         print("\nEvaluate each FL round in parallel")
 
         workers = []
         for rnd in range(0, self.T):
-            workers.append(pool.apply_async(self.sv_eval_one_rnd_rparallel, args=(rnd, rnds_acc_dict)))
+            workers.append(pool.apply_async(self.sv_eval_one_rnd_rparallel, args=(rnd,)))
 
         pool.close()
         pool.join()
-        self.update_time_dict_after_multiprocessing(workers)
+        self.update_dicts(workers)
 
         print("\nCalculate SVs")
-        self.calc_msv(rnds_acc_dict)
+        self.calc_msv()
 
 
 class SecSVPerm(SecSV):
@@ -448,15 +467,14 @@ class SecSVPerm(SecSV):
         model_ids_ls.sort(key=lambda x:len(x))
         return perm_ls, model_ids_ls
 
-    def sv_eval_one_rnd_rparallel(self, rnd, rnds_acc_dict, perms_dict):
+    def sv_eval_one_rnd_rparallel(self, rnd, perms_dict):
         self.recover_serialized_objects()
         self.init_time_dict()
         self.shares_loader()
         time_dict = self.time_dict.copy()
         self.hybridmodel.time_dict = time_dict
-        if self.measure_time:
-            start = time.process_time()
 
+        start = time.process_time()
         clients = self.clients
         acc_dict = {}
         correct_samples_dict = {}
@@ -466,55 +484,45 @@ class SecSVPerm(SecSV):
         aggr_subsets = [subset for subset in model_subsets if len(subset) > 1]
 
         self.eval_utilities(local_subsets, correct_samples_dict, acc_dict, rnd, skip=False)
-
-        if self.measure_time:
-            time_dict["total"] += time.process_time() - start
+        time_dict["total"] += time.process_time() - start
 
         acc_dict_skip = acc_dict.copy()
         correct_samples_dict_skip = correct_samples_dict.copy()
         time_dict_skip = time_dict.copy()
-
-        if self.skip:
-            self.hybridmodel.time_dict = time_dict_skip
-            if self.measure_time:
-                start = time.process_time()
-            self.eval_utilities(aggr_subsets, correct_samples_dict_skip, acc_dict_skip, rnd, skip=True)
-            rnds_acc_dict[rnd] = (acc_dict, acc_dict_skip)
-            perms_dict[rnd] = perm_ls
-            if self.measure_time:
-                time_dict_skip["total"] += time.process_time() - start
+        naive_samples_dict = {}
 
         if self.noskip:
             self.hybridmodel.time_dict = time_dict
-            if self.measure_time:
-                start = time.process_time()
-            self.eval_utilities(aggr_subsets, correct_samples_dict, acc_dict, rnd, skip=False)
-            rnds_acc_dict[rnd] = (acc_dict, acc_dict_skip)
-            perms_dict[rnd] = perm_ls
-            if self.measure_time:
-                time_dict["total"] += time.process_time() - start
 
-        return time_dict, time_dict_skip
+            start = time.process_time()
+            self.eval_utilities(aggr_subsets, correct_samples_dict, acc_dict, rnd, skip=False)
+            perms_dict[rnd] = perm_ls
+            time_dict["total"] += time.process_time() - start
+
+        if self.skip:
+            self.hybridmodel.time_dict = time_dict_skip
+
+            start = time.process_time()
+            self.eval_utilities(aggr_subsets, correct_samples_dict_skip, acc_dict_skip, rnd, naive_samples_dict, skip=True)
+            perms_dict[rnd] = perm_ls
+            time_dict_skip["total"] += time.process_time() - start
+
+        return (time_dict, time_dict_skip), (acc_dict, acc_dict_skip), naive_samples_dict
 
     def sv_eval_mul_rnds_rparallel(self):
-        if self.measure_time:
-            start = time.process_time()
-
+        start = time.process_time()
         self.init_context()
         self.secretly_share_data()
         self.shares_loader()
         self.eval_init_model()
-
-        if self.measure_time:
-            self.time_dict["total"] += time.process_time() - start
-            print("\nTime dict after evaluating the init model")
-            print(self.time_dict)
+        self.time_dict["total"] += time.process_time() - start
+        print("\nTime dict after evaluating the init model")
+        print(self.time_dict)
 
         self.context = None
         self.all_processed_shares = []
         self.processed_shares = []
         manager = mp.Manager()
-        rnds_acc_dict = manager.dict()
         perms_dict = manager.dict()
         pool = mp.Pool(10)
 
@@ -522,15 +530,15 @@ class SecSVPerm(SecSV):
 
         workers = []
         for rnd in range(0, self.T):
-            workers.append(pool.apply_async(self.sv_eval_one_rnd_rparallel, args=(rnd, rnds_acc_dict, perms_dict)))
+            workers.append(pool.apply_async(self.sv_eval_one_rnd_rparallel, args=(rnd, perms_dict)))
 
         pool.close()
         pool.join()
         self.perms_dict = perms_dict.copy()
-        self.update_time_dict_after_multiprocessing(workers)
+        self.update_dicts(workers)
 
         print("\nCalculate SVs")
-        self.calc_msv(rnds_acc_dict)
+        self.calc_msv()
 
 
 class SecSVGroupTesting(SecSV):
@@ -588,15 +596,14 @@ class SecSVGroupTesting(SecSV):
 
         return beta_mat, model_ids_ls
 
-    def sv_eval_one_rnd_rparallel(self, rnd, rnds_acc_dict, beta_mat_dict, model_subsets_ls_dict):
+    def sv_eval_one_rnd_rparallel(self, rnd, beta_mat_dict, model_subsets_ls_dict):
         self.recover_serialized_objects()
         self.init_time_dict()
         self.shares_loader()
         time_dict = self.time_dict.copy()
         self.hybridmodel.time_dict = time_dict
-        if self.measure_time:
-            start = time.process_time()
 
+        start = time.process_time()
         clients = self.clients
         acc_dict = {}
         correct_samples_dict = {}
@@ -607,58 +614,49 @@ class SecSVGroupTesting(SecSV):
         aggr_subsets = [subset for subset in model_subsets if len(subset) > 1]
 
         self.eval_utilities(local_subsets, correct_samples_dict, acc_dict, rnd, skip=False)
-
-        if self.measure_time:
-            time_dict["total"] += time.process_time() - start
+        time_dict["total"] += time.process_time() - start
 
         acc_dict_skip = acc_dict.copy()
         correct_samples_dict_skip = correct_samples_dict.copy()
         time_dict_skip = time_dict.copy()
-
-        if self.skip:
-            self.hybridmodel.time_dict = time_dict_skip
-            if self.measure_time:
-                start = time.process_time()
-            self.eval_utilities(aggr_subsets, correct_samples_dict_skip, acc_dict_skip, rnd, skip=True)
-            rnds_acc_dict[rnd] = (acc_dict, acc_dict_skip)
-            beta_mat_dict[rnd] = beta_mat
-            model_subsets_ls_dict[rnd] = model_subsets_ls
-            if self.measure_time:
-                time_dict_skip["total"] += time.process_time() - start
+        naive_samples_dict = {}
 
         if self.noskip:
             self.hybridmodel.time_dict = time_dict
-            if self.measure_time:
-                start = time.process_time()
+
+            start = time.process_time()
             self.eval_utilities(aggr_subsets, correct_samples_dict, acc_dict, rnd, skip=False)
-            rnds_acc_dict[rnd] = (acc_dict, acc_dict_skip)
             beta_mat_dict[rnd] = beta_mat
             model_subsets_ls_dict[rnd] = model_subsets_ls
-            if self.measure_time:
-                time_dict["total"] += time.process_time() - start
+            time_dict["total"] += time.process_time() - start
 
-        return time_dict, time_dict_skip
+        if self.skip:
+            self.hybridmodel.time_dict = time_dict_skip
+
+            start = time.process_time()
+            self.eval_utilities(aggr_subsets, correct_samples_dict_skip, acc_dict_skip, rnd, naive_samples_dict, skip=True)
+            beta_mat_dict[rnd] = beta_mat
+            model_subsets_ls_dict[rnd] = model_subsets_ls
+            time_dict_skip["total"] += time.process_time() - start
+
+        return (time_dict, time_dict_skip), (acc_dict, acc_dict_skip), naive_samples_dict
 
     def sv_eval_mul_rnds_rparallel(self):
 
-        if self.measure_time:
-            start = time.process_time()
 
+        start = time.process_time()
         self.init_context()
         self.secretly_share_data()
         self.shares_loader()
         self.eval_init_model()
-
-        if self.measure_time:
-            self.time_dict["total"] += time.process_time() - start
-            print("\nTime dict after evaluating the init model")
-            print(self.time_dict)
+        self.time_dict["total"] += time.process_time() - start
+        print("\nTime dict after evaluating the init model")
+        print(self.time_dict)
 
         self.context = None
         self.all_processed_shares = []
         self.processed_shares = []
         manager = mp.Manager()
-        rnds_acc_dict = manager.dict()
         beta_mat_dict = manager.dict()
         model_subsets_ls_dict = manager.dict()
         pool = mp.Pool(10)
@@ -667,40 +665,41 @@ class SecSVGroupTesting(SecSV):
 
         workers = []
         for rnd in range(0, self.T):
-            workers.append(pool.apply_async(self.sv_eval_one_rnd_rparallel,
-                                            args=(rnd, rnds_acc_dict, beta_mat_dict, model_subsets_ls_dict)))
+            workers.append(pool.apply_async(self.sv_eval_one_rnd_rparallel, args=(rnd, beta_mat_dict, model_subsets_ls_dict)))
 
         pool.close()
         pool.join()
         self.beta_mat_dict = beta_mat_dict.copy()
         self.model_subsets_ls_dict = model_subsets_ls_dict.copy()
-        self.update_time_dict_after_multiprocessing(workers)
+        self.update_dicts(workers)
 
         print("\nCalculate SVs")
-        self.calc_msv(rnds_acc_dict)
+        self.calc_msv()
 
 
 
 if __name__ == '__main__':
     clients = Clients()
-    clients.dirs = "data/mnist_logi/iid/0/"
+    clients.dirs = "data/mnist_cnn1/dir0.5/0/"
+    # clients.dirs = "data/cifar_cnn2/dir0.5/0/"
     clients.load("clients.data")
 
-    # sveval = SecSV(clients, Sec_Logi_MNIST())
+    # sveval = SecSV(clients, Sec_CNN2_CIFAR())
+    sveval = SecSV(clients, Sec_CNN1_MNIST())
     # sveval = SecSVPerm(clients, Sec_Logi_MNIST(), 0.25, 0.1)
+    sveval.skip = False
+    # sveval.input_shape = (-1, 3, 32, 32)
+    # sveval.batch_size = 64
+    sveval.sv_eval_mul_rnds_rparallel()
+    # # sveval.dirs = clients.dirs
+    # sveval.save_stat("secsv_perm.json", skip=False)
+    # sveval.save_stat("secsv_perm_skip.json", skip=True)
+
+    # sveval = SecSVGroupTesting(clients, Sec_Logi_MNIST(), 0.25, 0.1)
     # # sveval.skip = False
     # sveval.input_shape = (-1, 784)
     # sveval.batch_size = 392
     # sveval.sv_eval_mul_rnds_rparallel()
     # # sveval.dirs = clients.dirs
-    # sveval.save_stat("secsv_perm.json", skip=False)
-    # sveval.save_stat("secsv_perm_skip.json", skip=True)
-
-    sveval = SecSVGroupTesting(clients, Sec_Logi_MNIST(), 0.25, 0.1)
-    # sveval.skip = False
-    sveval.input_shape = (-1, 784)
-    sveval.batch_size = 392
-    sveval.sv_eval_mul_rnds_rparallel()
-    # sveval.dirs = clients.dirs
-    sveval.save_stat("secsv_grouptesting.json", skip=False)
-    sveval.save_stat("secsv_grouptesting_skip.json", skip=True)
+    # sveval.save_stat("secsv_grouptesting.json", skip=False)
+    # sveval.save_stat("secsv_grouptesting_skip.json", skip=True)

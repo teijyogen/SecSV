@@ -7,7 +7,14 @@ import time
 import random
 import copy
 import math
+import os
 
+def make_dir(dir):
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+    return dir
+
+    
 class H5Dataset(Dataset):
     """Dataset wrapping data and target tensors.
 
@@ -91,9 +98,11 @@ def get_diagonal(matrix, position):
 
 if __name__ == '__main__':
 
-    matrix = np.array([i + 1 for i in range(4096)]).reshape(64, 64)
+    y = np.array([0, -4000, 10, 20])
 
+    y = 1 / (1 + np.exp(-y))
 
+    print(y)
     # matrix = np.array([i + 1 for i in range(7840)]).reshape(10, 784)
     # vec = np.random.randn(5, 784).T.reshape(-1)
     # print(communicate(vec) * 14)

@@ -1,7 +1,7 @@
 import numpy as np
 from torchvision import datasets, transforms
 
-def extr_noniid_dirt(train_dataset, test_dataset, num_users, num_classes, alpha=0.5):
+def extr_noniid_dirt(train_dataset, test_dataset, num_users, num_classes, alpha=0.5, sample_rate_test=1.0):
     num_imgs_perc_train, num_imgs_train_total = int(len(train_dataset)/num_classes), len(train_dataset)
     num_imgs_perc_test, num_imgs_test_total = int(len(test_dataset)/num_classes), len(test_dataset)
     dict_users_train = {i: np.array([]) for i in range(num_users)}
@@ -44,10 +44,9 @@ def extr_noniid_dirt(train_dataset, test_dataset, num_users, num_classes, alpha=
 
             dict_users_train[i] = np.concatenate((dict_users_train[i], rand_set), axis=0)
 
-            rand_set_test = np.random.choice(idxs_classes_test[j], int(distribution[j][i]*num_imgs_perc_test), replace=False)
+            rand_set_test = np.random.choice(idxs_classes_test[j], int(distribution[j][i]*num_imgs_perc_test*sample_rate_test), replace=False)
             idxs_classes_test[j] = list(set(idxs_classes_test[j]) - set(rand_set_test))
             dict_users_test[i] = np.concatenate((dict_users_test[i], rand_set_test), axis=0)
-
     return dict_users_train, dict_users_test
 
 def get_mnist_iid(num_users):
@@ -84,17 +83,17 @@ def get_cifar_iid(num_users):
 
     return train_data, test_data, indices_train_ls, indices_test_ls
 
-def get_mnist_dirt(num_users, alpha=0.5):
+def get_mnist_dirt(num_users, alpha=0.5, sample_rate_test=1.0):
     apply_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.1307,), (0.3081,))])
     train_data = datasets.MNIST('data', train=True, download=True, transform=apply_transform)
     test_data = datasets.MNIST('data', train=False, download=True, transform=apply_transform)
 
-    indices_train_ls, indices_test_ls = extr_noniid_dirt(train_data, test_data, num_users, 10, alpha)
+    indices_train_ls, indices_test_ls = extr_noniid_dirt(train_data, test_data, num_users, 10, alpha, sample_rate_test=sample_rate_test)
     return train_data, test_data, indices_train_ls, indices_test_ls
 
-def get_cifar_dirt(num_users, alpha=0.5):
+def get_cifar_dirt(num_users, alpha=0.5, sample_rate_test=1.0):
     apply_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
@@ -102,6 +101,6 @@ def get_cifar_dirt(num_users, alpha=0.5):
 
     test_data = datasets.CIFAR10('data', train=False, download=True, transform=apply_transform)
 
-    indices_train_ls, indices_test_ls = extr_noniid_dirt(train_data, test_data, num_users, 10, alpha)
+    indices_train_ls, indices_test_ls = extr_noniid_dirt(train_data, test_data, num_users, 10, alpha, sample_rate_test=sample_rate_test)
     return train_data, test_data, indices_train_ls, indices_test_ls
 

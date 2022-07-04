@@ -380,7 +380,7 @@ class SVPerm(SVEval):
         self.epsi = epsi
         self.sigma = sigma
         self.N = len(clients.selection_record[0])
-        self.esti_times = math.ceil(2 * self.N / (epsi ** 2) * math.log(2 * self.N / sigma))
+        self.esti_times = math.ceil(2 * self.N / (epsi ** 2) * math.log(2 * self.N / sigma, 2))
 
     def permutation_sampling(self, clients_ls):
         perm_ls = []
@@ -550,8 +550,8 @@ class SVGroupTesting(SVEval):
         sigma = self.sigma
         qtot = (N - 2) / N * q[0] + np.array([q[k-1] * (1 + 2 * k * (k - N) / N / (N -1)) for k in range(2, N)]).sum().item()
         def h(u):
-            return (1 + u) * math.log(1 + u) - u
-        self.esti_times = math.ceil(8 * math.log(N * (N -1) / (2 * sigma)) / ((1 - qtot ** 2) * h(epsi / (Z * N ** 0.5 * (1 - qtot ** 2)))))
+            return (1 + u) * math.log(1 + u, 2) - u
+        self.esti_times = math.ceil(8 * math.log(N * (N -1) / (2 * sigma), 2) / ((1 - qtot ** 2) * h(epsi / (Z * N ** 0.5 * (1 - qtot ** 2)))))
 
     def group_testing_sampling(self, clients_ls):
         beta_mat = []
@@ -723,16 +723,17 @@ if __name__ == '__main__':
     print("Directory:", clients.dirs)
 
     sveval = SVGroupTesting(clients, 0.25, 0.1)
+    print(sveval.esti_times)
     # sveval = SVPerm(clients, 0.25, 0.1)
-    sveval.skip = True
-    sveval.skip_compare = True
-    sveval.global_skip = False
+    # sveval.skip = True
+    # sveval.skip_compare = True
+    # sveval.global_skip = False
     # sveval.input_shape = (-1, 784)
     # sveval.input_shape = (-1, 3072)
     # sveval.input_shape = (-1, 3, 32, 32)
-    sveval.sv_eval_mul_rnds_rparallel()
-    sveval.dirs = clients.dirs
-    sveval.save_stat("sv_grouptesting_skip.json")
+    # sveval.sv_eval_mul_rnds_rparallel()
+    # sveval.dirs = clients.dirs
+    # sveval.save_stat("sv_grouptesting_skip.json")
 
 
 

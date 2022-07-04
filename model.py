@@ -4,6 +4,23 @@ import torch.nn.functional as F
 from torchvision import datasets
 import torchvision.transforms as transforms
 
+# class CNN1_MNIST(nn.Module):
+#     def __init__(self):
+#         super(CNN1_MNIST, self).__init__()
+#         self.conv1 = nn.Conv2d(1, 5, kernel_size=5, stride=2)
+#         self.fc1 = nn.Linear(845, 100)
+#         self.fc2 = nn.Linear(100, 10)
+#
+#     def forward(self, x):
+#         x = nn.functional.pad(x, pad=(1, 0, 1, 0))
+#         x = self.conv1(x)
+#         x = x.view(-1, 845)
+#         x = x * x
+#         x = self.fc1(x)
+#         x = x * x
+#         x = self.fc2(x)
+#         return x
+
 
 class CNN1_MNIST(nn.Module):
     def __init__(self, hidden=64, output=10):
@@ -14,16 +31,9 @@ class CNN1_MNIST(nn.Module):
 
     def forward(self, x):
         x = self.conv1(x)
-        # print(x[0, 0, :, :].reshape(1, 8, 8))
-        # print("----------------------------------")
-        # the model uses the square activation function
         x = x * x
-        # flattening while keeping the batch axis
         x = x.view(-1, 256)
         x = self.fc1(x)
-        # print(x.shape)
-        # print(x)
-        # print("----------------------------------")
         x = x * x
         x = self.fc2(x)
         return x
@@ -98,8 +108,13 @@ class CNN2_CIFAR(nn.Module):
         self.fc3 = nn.Linear(84, 10)
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
+        x = self.conv1(x)
+        # print(x.shape)
+        x = F.relu(x)
+        x = self.pool(x)
+        x = self.conv2(x)
+        x = F.relu(x)
+        x = self.pool(x)
         x = torch.flatten(x, 1) # flatten all dimensions except batch
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
@@ -112,9 +127,22 @@ class Logistic(nn.Module):
     def __init__(self, input_size, num_classes):
         super(Logistic, self).__init__()
         self.linear = nn.Linear(input_size, num_classes)
-        self.sig = nn.Sigmoid()
+        # self.sig = nn.Sigmoid()
 
     def forward(self, x):
         out = self.linear(x)
-        out = self.sig(out)
+        # out = self.sig(out)
         return out
+
+if __name__ == '__main__':
+    input = torch.rand((3, 32, 32)).view(-1, 3, 32, 32)
+    model = CNN2_CIFAR()
+    params = model.state_dict()
+    weight_ls = params["conv1.weight"]
+    bias_ls = params["conv1.bias"]
+    count = 0
+    for weight, bias in zip(weight_ls, bias_ls):
+        count += 1
+
+    print(count)
+    # output = model(input)

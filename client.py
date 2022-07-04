@@ -40,6 +40,7 @@ class Client:
                 transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
             dataset = datasets.CIFAR10('data', train=False, download=True, transform=apply_transform)
+
         return torch.utils.data.Subset(dataset, self.test_indices)
 
 class Clients:

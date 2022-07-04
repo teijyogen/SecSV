@@ -4,7 +4,7 @@ import pandas as pd
 from sveval import SVEval
 from client import Clients
 from tqdm import tqdm
-pd.set_option('precision', 12)
+# pd.set_option('precision', 12)
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
@@ -13,7 +13,7 @@ def load_dict(filename):
         data = json.load(f)
     return data
 
-def cal_mae_msv(benchmark, distribution, filename, run_nb=1):
+def cal_mae_msv(benchmark, distribution, filename, run_nb=10):
     df_ls = []
     for run in range(run_nb):
         dirs = "data/%s/%s/%s/" % (benchmark, distribution, run)
@@ -26,7 +26,7 @@ def cal_mae_msv(benchmark, distribution, filename, run_nb=1):
     df = pd.concat(df_ls)
     return df.abs().mean().mean()
 
-def cal_mae_ssv(benchmark, distribution, filename, run_nb=1):
+def cal_mae_ssv(benchmark, distribution, filename, run_nb=10):
     df_ls = []
     for run in range(run_nb):
         dirs = "data/%s/%s/%s/" % (benchmark, distribution, run)
@@ -64,14 +64,17 @@ def cal_skip(benchmark, distribution, filename, run_nb=10):
 
 def cal_wrong_rate(benchmark, distribution, filename, run_nb=10):
     df = cal_skip(benchmark, distribution, filename, run_nb)
-    failure_rate = (df["wrong naive"] + df["wrong hard"]) / (df["naive size"] + df["hard size"])
+    # failure_rate = (df["wrong naive"] + df["wrong hard"]) / (df["naive size"] + df["hard size"])
     failure_rate_naive = df["wrong naive"] / df["naive size"]
-    failure_rate_hard = df["wrong hard"] / df["hard size"]
-    return failure_rate, failure_rate_naive, failure_rate_hard
+    # failure_rate_hard = df["wrong hard"] / df["hard size"]
+    return failure_rate_naive,
 
 if __name__ == '__main__':
 
-    print(cal_time_dict("mnist_logi", "iid", "hesv.json"))
-    print(cal_time_dict("mnist_logi", "iid", "secsv.json"))
-    print(cal_time_dict("mnist_logi", "iid", "secsv_skip.json"))
+    print(cal_wrong_rate("cifar_cnn2", "dir0.1", "sv_skip+.json"))
+    print(cal_wrong_rate("cifar_cnn2", "dir0.5", "sv_skip+.json"))
+    print(cal_wrong_rate("cifar_cnn2", "dir1.0", "sv_skip+.json"))
+    print(cal_wrong_rate("cifar_cnn2", "dir2.0", "sv_skip+.json"))
+    print(cal_wrong_rate("cifar_cnn2", "dir5.0", "sv_skip+.json"))
+    print(cal_wrong_rate("cifar_cnn2", "iid", "sv_skip+.json"))
 

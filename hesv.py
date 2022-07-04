@@ -32,27 +32,28 @@ class HESV:
         self.clients = clients
         self.hemodel = hemodel
         self.test_data = torch.utils.data.ConcatDataset([clients.data[id].test_data() for id in clients.data.keys()])
-        self.batch_size = 64
+        self.batch_size = hemodel.input_nb
+        self.input_shape = hemodel.input_shape
         self.T = len(clients.selection_record)
         self.init_accs = {}
         self.ssv_dict = {}
         self.msv_dict = {}
         self.dirs = "data/"
         self.test_size = len(self.test_data)
-        self.input_shape = (-1, 28, 28)
-        self.measure_time = True
         self.time_dict = {}
         self.init_time_dict()
         self.context = None
         self.context_bytes = None
         self.encrypted_data_list = []
+        self.poly_modulus_degree = 2 ** 13
+        self.n_slots = self.poly_modulus_degree // 2
 
     def init_context(self):
         print("\nGenerate and distribute HE keys")
         PREC = 23
         context = ts.context(
             ts.SCHEME_TYPE.CKKS,
-            poly_modulus_degree=2 ** 13,
+            poly_modulus_degree=self.poly_modulus_degree,
             coeff_mod_bit_sizes=[PREC + 9, PREC, PREC, PREC + 9]
         )
         context.global_scale = pow(2, PREC)
@@ -61,12 +62,11 @@ class HESV:
         context_bytes_sk = context.serialize(save_secret_key=True)
         context_bytes = context.serialize(save_secret_key=False)
 
-        if self.measure_time:
-            self.time_dict["communication"] += communicate(context_bytes_sk) * (self.clients.size - 1) + communicate(
-                context_bytes)
+        self.time_dict["communication"] += communicate(context_bytes_sk) * (self.clients.size - 1) + communicate(context_bytes)
 
         self.context = context
         self.context_bytes = context_bytes_sk
+        self.hemodel.n_slots = self.n_slots
 
     def init_time_dict(self):
         self.time_dict["total"] = 0.0
@@ -85,14 +85,16 @@ class HESV:
         for id in self.clients.data.keys():
             test_data = self.clients.data[id].test_data()
             data_loader = torch.utils.data.DataLoader(test_data, batch_size=self.batch_size, shuffle=False)
+            self.hemodel.input_nb = self.batch_size
 
             for (data, target) in data_loader:
-                data = data.view(self.input_shape)
-                self.hemodel.image_nb = data.shape[0]
+                data = data.numpy().reshape(self.input_shape)
+                size = data.shape[0]
+                data = np.pad(data.reshape(size, -1), ((0, self.batch_size-size), (0, 0))).reshape(self.batch_size, -1)
                 enc_features_bytes = self.hemodel.encrypt_input(data)
                 enc_truth_bytes = self.hemodel.encrypt_truth(target)
 
-                self.encrypted_data_bytes_list.append((enc_features_bytes, enc_truth_bytes, data.shape[0]))
+                self.encrypted_data_bytes_list.append((enc_features_bytes, enc_truth_bytes, size))
 
         self.encrypted_data_bytes_list.sort(key=lambda x: x[2], reverse=True)
         self.hemodel.context = None
@@ -125,18 +127,14 @@ class HESV:
         encrypted_data_list = self.encrypted_data_list
         correct_nb = 0
         sec_model = self.hemodel
-        sec_model.image_nb = encrypted_data_list[0][2]
-        sec_model.measure_time = self.measure_time
+        # sec_model.input_nb = encrypted_data_list[0][2]
         sec_model.init_model_paras(context, model_paras)
 
         pbar = tqdm(encrypted_data_list, mininterval=60)
         # pbar = tqdm(encrypted_data_list)
         # pbar = encrypted_data_list
         for (enc_features, enc_truth, size) in pbar:
-            if size != sec_model.image_nb:
-                sec_model.image_nb = size
-                sec_model.init_model_paras(context, model_paras)
-
+            sec_model.truth_nb = size
             incr_correct_nb = sec_model(enc_features, enc_truth)
             # print(incr_correct_nb / size)
             correct_nb += incr_correct_nb
@@ -144,35 +142,44 @@ class HESV:
         sec_model.clear_model_paras()
         return correct_nb
 
-    def recover_serialized_objects(self):
-        self.context = ts.Context.load(self.context_bytes)
+    def eval_init_model(self):
+        print("\nEvaluate the initial model")
+        self.recover_serialized_objects()
+        init_model = torch.load(self.clients.init_model)
+        model_paras = init_model.state_dict()
+        correct_nb = self.eval(model_paras)
+        self.init_accs[0] = correct_nb / self.test_size
+        # self.init_accs[0] = 0.1
 
-        if type(self.encrypted_data_bytes_list[0][0][0]) != list:
-            for (enc_features_bytes, enc_truth_bytes, size) in self.encrypted_data_bytes_list:
-                enc_features = []
-                for enc_feature_byte in enc_features_bytes:
-                    enc_features.append(ts.CKKSVector.load(self.context, enc_feature_byte))
-                enc_truth = ts.CKKSVector.load(self.context, enc_truth_bytes)
-                self.encrypted_data_list.append((enc_features, enc_truth, size))
+        # model = torch.load("model/cifar_cnn2/dir0.5/0/rnd9/global.pkl")
+        # model = torch.load("model/mnist_cnn1/dir0.5/0/rnd9/global.pkl")
+        # model_paras = model.state_dict()
+        # correct_nb = self.eval(model_paras)
+        # print(correct_nb / self.test_size)
+
+    def recover_features(self, enc_feature_bytes):
+        if type(enc_feature_bytes) == list:
+            enc_features = []
+            for enc_feature_byte in enc_feature_bytes:
+                enc_features.append(self.recover_features(enc_feature_byte))
+            return enc_features
         else:
-            for (enc_features_bytes, enc_truth_bytes, size) in self.encrypted_data_bytes_list:
-                enc_features = []
-                for enc_feature_byte in enc_features_bytes:
-                    enc_feature = []
-                    for enc_mat_byte in enc_feature_byte:
-                        enc_feature.append(ts.CKKSVector.load(self.context, enc_mat_byte))
-                    enc_features.append(enc_feature)
-                enc_truth = ts.CKKSVector.load(self.context, enc_truth_bytes)
-                self.encrypted_data_list.append((enc_features, enc_truth, size))
+            return ts.CKKSVector.load(self.context, enc_feature_bytes)
 
+
+    def recover_serialized_objects(self):
+        self.context = ts.Context.load(self.context_bytes, self.poly_modulus_degree)
+
+        for (enc_features_bytes, enc_truth_bytes, size) in self.encrypted_data_bytes_list:
+            enc_features = self.recover_features(enc_features_bytes)
+            enc_truth = ts.CKKSVector.load(self.context, enc_truth_bytes)
+            self.encrypted_data_list.append((enc_features, enc_truth, size))
 
     def sv_eval_one_rnd_rparallel(self, rnd, rnds_acc_dict):
         self.recover_serialized_objects()
         self.init_time_dict()
 
-        if self.measure_time:
-            start = time.process_time()
-
+        start = time.process_time()
         clients = self.clients
         acc_dict = {}
         sel_clients = clients.selected_clients(rnd)
@@ -200,35 +207,19 @@ class HESV:
             acc_dict[subset] = correct_nb / self.test_size
 
         rnds_acc_dict[rnd] = acc_dict
-
-        if self.measure_time:
-            self.time_dict["total"] += time.process_time() - start
+        self.time_dict["total"] += time.process_time() - start
 
         return self.time_dict
 
     def sv_eval_mul_rnds_rparallel(self):
-        if self.measure_time:
-            start = time.process_time()
 
+        start = time.process_time()
         self.init_context()
         self.encrypt_data()
-        self.recover_serialized_objects()
-        init_model = torch.load(self.clients.init_model)
-        model_paras = init_model.state_dict()
-        print("\nEvaluate the initial model")
-        correct_nb = self.eval(model_paras)
-        self.init_accs[0] = correct_nb / self.test_size
-        # self.init_accs[0] = 0.1
-
-        # model = torch.load("model/mnist_logi/iid/0/rnd9/global.pkl")
-        # model_paras = model.state_dict()
-        # correct_nb = self.eval(model_paras)
-        # print(correct_nb / self.test_size)
-
-        if self.measure_time:
-            self.time_dict["total"] += time.process_time() - start
-            print("\nTime dict after evaluating the init model")
-            print(self.time_dict)
+        self.eval_init_model()
+        self.time_dict["total"] += time.process_time() - start
+        print("\nTime dict after evaluating the init model")
+        print(self.time_dict)
 
         print("\nEvaluate each FL round in parallel")
 
@@ -245,18 +236,17 @@ class HESV:
         pool.close()
         pool.join()
 
-        if self.measure_time:
-            time_dicts = [worker.get() for worker in workers]
-            print("\nTime consumed by each sub-process")
-            print(time_dicts)
-            incr_time_df = pd.DataFrame(time_dicts).sum()
-            print("\nTotal time consumed by sub-processes")
-            print(dict(incr_time_df))
-            self.time_dict = dict(pd.DataFrame([self.time_dict]).sum() + incr_time_df)
-            print("\nTime dict after evaluating all rounds")
-            print(self.time_dict)
+        time_dicts = [worker.get() for worker in workers]
+        print("\nTime consumed by each sub-process")
+        print(time_dicts)
+        incr_time_df = pd.DataFrame(time_dicts).sum()
+        print("\nTotal time consumed by sub-processes")
+        print(dict(incr_time_df))
+        self.time_dict = dict(pd.DataFrame([self.time_dict]).sum() + incr_time_df)
+        print("\nTime dict after evaluating all rounds")
+        print(self.time_dict)
 
-            start = time.process_time()
+        start = time.process_time()
 
         print("\nCalculate SVs")
         for rnd in rnds_acc_dict:
@@ -265,14 +255,14 @@ class HESV:
                 self.init_accs[rnd] = rnds_acc_dict[rnd-1][frozenset(self.clients.selected_ids(rnd-1))]
             acc_dict[frozenset()] = self.init_accs[rnd]
             SV = ShapleyValue(self.clients.selection_record[rnd], acc_dict)
+            SV.calculate_svs()
             self.update_ssv(SV.svs, rnd)
 
         self.cal_msv()
 
-        if self.measure_time:
-            self.time_dict["total"] += time.process_time() - start + self.time_dict["communication"]
-            print("\nOverall time dict")
-            print(self.time_dict)
+        self.time_dict["total"] += time.process_time() - start + self.time_dict["communication"]
+        print("\nOverall time dict")
+        print(self.time_dict)
 
         print("\nSSVs and MSVs")
         print(self.ssv_dict)
@@ -282,11 +272,15 @@ class HESV:
 
 if __name__ == '__main__':
     clients = Clients()
-    clients.dirs = "data/mnist_logi/iid/0/"
+    # clients.dirs = "data/cifar_cnn2/dir0.5/0/"
+    clients.dirs = "data/mnist_cnn1/dir0.5/0/"
     clients.load("clients.data")
 
-    sveval = HESV(clients, HE_Logi_MNIST())
-    sveval.input_shape = (-1, 784)
-    sveval.batch_size = 392
+    # sveval = HESV(clients, HE_CNN2_CIFAR())
+    sveval = HESV(clients, HE_CNN1_MNIST())
+    print(type(sveval) == HESV)
+    # sveval.input_shape = (-1, 3, 32, 32)
+    # sveval.batch_size = 34
+    sveval.batch_size = 64
     sveval.sv_eval_mul_rnds_rparallel()
     # sveval.save_stat("cnn1_mnist_iid_he.json")
