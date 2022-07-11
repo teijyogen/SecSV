@@ -14,11 +14,9 @@ class Model(nn.Module):
         self.criterion = torch.nn.CrossEntropyLoss()
         self.test_batch_size = 1000
         self.log_interval = 10
-        self.lr = 1e-3
 
     def model_train(self, train_data):
         train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True)
-        # train_loader = torch.batch
         self.to(self.device).train()
 
         optimizer = self.optimizer(self.parameters(), lr=self.lr)
@@ -76,6 +74,7 @@ class MNIST_CNN(Model):
         self.batch_size = 64
         self.lr = 1e-3
         self.criterion = torch.nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.Adam
 
     def forward(self, x):
         x = self.conv1(x)
@@ -122,8 +121,9 @@ class BANK_Logi(Model):
         self.fc = nn.Linear(48, 2)
         self.batch_size = 64
         self.n_epochs = 20
-        self.lr = 1e-2
+        self.lr = 1e-3
         self.criterion = torch.nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.Adam
 
     def forward(self, x):
         x = self.fc(x)
@@ -137,17 +137,16 @@ class AGNEWS_Logi(Model):
 
     def __init__(self):
         super(AGNEWS_Logi, self).__init__()
-        self.optimizer = torch.optim.SGD
         self.embed_size = 300
         self.input_shape = (-1, self.embed_size)
         self.n_classes = 4
-        # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.fc = nn.Linear(self.embed_size, self.n_classes)
         # self.init_weights()
         self.n_epochs = 20
         self.batch_size = 64
         self.lr = 1e-3
         self.criterion = torch.nn.CrossEntropyLoss()
+        # self.optimizer = torch.optim.Adam
 
     def init_weights(self):
         initrange = 0.5
@@ -166,7 +165,6 @@ class mRNA_RNN(Model):
 
     def __init__(self, seq_len=10, input_size=64, hidden=32):
         super(mRNA_RNN, self).__init__()
-        self.optimizer = torch.optim.Adam
         self.seq_len = seq_len
         self.input_size = input_size
         self.hidden_size = hidden
@@ -181,6 +179,7 @@ class mRNA_RNN(Model):
         self.batch_size = 64
         self.lr = 1e-3
         self.criterion = torch.nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.Adam
 
     def forward(self, input):
         output, state = self.rnn(input)

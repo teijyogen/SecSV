@@ -276,10 +276,10 @@ class HESV:
 
 
 if __name__ == '__main__':
-    clients = Clients("bank_logi/dirt0.5sr0.1/0/")
+    clients = Clients("mrna_rnn/dirt0.5sr0.1/0/")
     clients.load("clients.data")
 
-    sveval = HESV(clients, HE_BANK_Logi())
+    sveval = HESV(clients, HE_mRNA_RNN())
     sveval.debug = True
     sveval.sv_eval_mul_rnds_rparallel()
     # sveval.save_stat("cnn1_mnist_iid_he.json")

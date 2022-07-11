@@ -15,10 +15,11 @@ try:
 except RuntimeError:
     pass
 
+
 class Args:
     def __init__(self):
-        self.seed = 42
-        # self.seed = (os.getpid() * int(time.time())) % 123456789
+        # self.seed = 42
+        self.seed = (os.getpid() * int(time.time())) % 123456789
         self.alpha = 0.5
         self.n_clients = 5
         self.test_data_sample_rate = 1.0
@@ -94,27 +95,33 @@ class FL:
         clients.save()
 
 
-def run_fl(model_func, run=0, args=Args()):
+def run_fl(model_func, run=0, sample_rate=1.0, device_id=0):
+    args = Args()
     set_random_seed(args.seed)
 
     train_data, test_data, indices_train_ls, indices_test_ls = model_func.data_func(args.n_clients, alpha=args.alpha,
-                                                                         sample_rate_test=args.test_data_sample_rate)
+                                                                         sample_rate_test=sample_rate)
 
-    clients = Clients("%s/dirt%.1fsr%.1f/%s/" % (model_func.model_name, args.alpha, args.test_data_sample_rate, run))
+    clients = Clients("%s/dirt%.1fsr%.1f/%s/" % (model_func.model_name, args.alpha, sample_rate, run))
     clients.filename = "clients.data"
     clients.generate_clients(model_func.data_name, indices_train_ls, indices_test_ls)
 
-    fl = FL(model_func(), clients, rnds=args.rnds, sel_rate=args.sel_rate)
+    model = model_func()
+    model.device = torch.device("cuda", device_id)
+    fl = FL(model, clients, rnds=args.rnds, sel_rate=args.sel_rate)
     fl.test_data = test_data
     fl.mul_rnds_fl(clients)
 
 
-def parallel_train(train_func, run_nb, alpha=0.5):
-
+def parallel_train(model_func, runs, sample_rates):
     pool = mp.Pool(10)
     workers = []
-    for run in range(0, run_nb):
-        workers.append(pool.apply_async(train_func, args=(alpha, run)))
+    count = 0
+    for run in runs:
+        for sample_rate in sample_rates:
+            device_id = count % torch.cuda.device_count()
+            workers.append(pool.apply_async(run_fl, args=(model_func, run, sample_rate, device_id)))
+            count += 1
 
     pool.close()
     pool.join()
@@ -125,12 +132,17 @@ def parallel_train(train_func, run_nb, alpha=0.5):
 
 if __name__ == '__main__':
 
-    # run_fl(BANK_Logi)
-    # run_fl(AGNEWS_Logi)
-    args = Args()
-    args.test_data_sample_rate = 0.1
-    run_fl(AGNEWS_Logi, args=args)
-    # run_fl(MNIST_CNN)
+    runs = range(0, 5)
+    sample_rates = [0.2, 0.4, 0.6, 0.8, 1.0]
+    print("Start to train BANK_Logi")
+    parallel_train(BANK_Logi, runs, sample_rates)
+    print("Start to train mRNA_RNN")
+    parallel_train(mRNA_RNN, runs, sample_rates)
+    print("Start to train AGNEWS_Logi")
+    parallel_train(AGNEWS_Logi, runs, sample_rates)
+    print("Start to train MNIST_CNN")
+    parallel_train(MNIST_CNN, runs, sample_rates)
+
 
 
 
