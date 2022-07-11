@@ -254,7 +254,7 @@ class HEModel(EncModel):
         padded_bias = np.pad(rep_bias, ((0, mat_len-subdim), (0, mat_len-self.input_nb)))
 
         if mat_len ** 2 > self.n_slots:
-            enc_bias = self.encrypt_and_send(padded_bias, n_rows_left=subdim, divide=True, residual=True)
+            enc_bias = self.encrypt_and_send(padded_bias, n_rows_left=subdim, big_mat=True, residual=True)
         else:
             enc_bias = self.encrypt_and_send(padded_bias)
 
@@ -796,8 +796,7 @@ class HE_AGNEWS_Logi(HEModel):
 
     def forward(self, enc_x, enc_truth):
         enc_y = self.sec_fc(self.enc_fc, enc_x, residual_nb=self.fc_residual_nb)
-        mat_len = self.fc_input_size
-        enc_pred = self.predict(enc_y, [mat_len, mat_len], self.fc_output_size)
+        enc_pred = self.predict(enc_y, [self.fc_output_size, self.fc_input_size], self.fc_output_size)
 
         return self.sec_compare(enc_pred, enc_truth)
 

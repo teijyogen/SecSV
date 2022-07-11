@@ -1,6 +1,8 @@
 from client import *
 from hesv import *
 from securesv import *
+import numpy as np
+np.seterr(all="ignore")
 
 model_func_dict = {
     "mnist_cnn": (HE_MNIST_CNN, Sec_MNIST_CNN),
@@ -14,8 +16,8 @@ if __name__ == '__main__':
     for run in tqdm(range(0, 5)):
         print("\n-----------------------------------")
         print("Experiment run:", run)
-        for dist in ["dir0.5sr0.1"]:
-            for model in ["mnist_cnn", "bank_logi", "agnews_logi", "mrna_rnn"]:
+        for dist in ["dirt0.5sr0.2", "dirt0.5sr0.4", "dirt0.5sr0.6", "dirt0.5sr0.8", "dirt0.5sr1.0"]:
+            for model in ["bank_logi", "agnews_logi", "mrna_rnn", "mnist_cnn"]:
             # for model in ["mnist_cnn1"]:
                 dirs = "%s/%s/%s/" % (model, dist, run)
                 print("\n-----------------------------------")
@@ -37,7 +39,7 @@ if __name__ == '__main__':
                 for title, sveval, filename in tqdm(titles_svevals):
                     print("\n-----------------------------------")
                     print(title)
-                    sveval.dirs = clients.dirs
+                    
                     sveval.sv_eval_mul_rnds_rparallel()
                     if type(sveval) == HESV:
                         sveval.save_stat(filename)

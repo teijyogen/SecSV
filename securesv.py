@@ -296,9 +296,9 @@ class SecSV:
         print("\nEvaluate the initial model")
         self.processed_shares = self.all_processed_shares
         if self.debug:
-            init_model = clients.get_global_model(self.T-1)
+            init_model = self.clients.get_global_model(self.T-1)
         else:
-            init_model = clients.get_init_model()
+            init_model = self.clients.get_init_model()
         model_paras = init_model.state_dict()
         correct_ids = self.eval(model_paras)
         self.init_accs[0] = len(correct_ids) / self.test_size
@@ -682,12 +682,12 @@ class SecSVGroupTesting(SecSV):
 
 
 if __name__ == '__main__':
-    clients = Clients("mrna_rnn/dirt0.5sr0.1/0/")
+    clients = Clients("agnews_logi/dirt0.5sr1.0/0/")
     clients.load("clients.data")
 
-    sveval = SecSV(clients, Sec_mRNA_RNN())
+    sveval = SecSV(clients, Sec_AGNEWS_Logi())
     # sveval = SecSVPerm(clients, Sec_Logi_MNIST(), 0.25, 0.1)
-    sveval.skip = False
+    sveval.skip = True
     sveval.debug = True
     sveval.sv_eval_mul_rnds_rparallel()
 
