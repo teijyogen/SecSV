@@ -26,29 +26,161 @@ class HybridModel(EncModel):
         self.gamma1 = gamma1
         self.gamma2 = gamma2
         self.modulus_size = 1 + self.gamma1 + self.gamma2
+        self.divide_big_mat = False
+        self.input_nb = None
 
-    def prepare_shares_for_conv(self, x, windows_nb, kernel_len, stride, pad_width=((0, 0), (0, 0), (0, 0)), in_channels_nb=1, vir_channels_nb=1):
+    def set_input_nb(self, input_nb):
+        print("Set input size:", input_nb)
+        self.input_nb = input_nb
+
+    def encrypt(self, mat):
+        mat = mat.reshape(-1)
+        mat_size = mat.shape[0]
+        big_mat = mat_size > self.n_slots
+
+        if big_mat and self.divide_big_mat:
+            enc_vec = []
+            nb_mat = math.ceil(mat_size / self.n_slots)
+
+            for i in range(nb_mat):
+                vec = mat[i*self.n_slots:(i+1)*self.n_slots]
+                enc_vec.append(self.encrypt_(vec))
+        else:
+            enc_vec = self.encrypt_(mat)
+
+        return enc_vec
+
+    def plaintext(self, mat):
+        mat = mat.reshape(-1)
+        mat_size = mat.shape[0]
+        big_mat = mat_size > self.n_slots
+
+        if big_mat and self.divide_big_mat:
+            plain_vec = []
+            nb_mat = math.ceil(mat_size / self.n_slots)
+
+            for i in range(nb_mat):
+                vec = mat[i*self.n_slots:(i+1)*self.n_slots]
+                plain_vec.append(self.plaintext_(vec))
+        else:
+            plain_vec = self.plaintext_(mat)
+
+        return plain_vec
+
+    def decrypt(self, enc_vec):
+        if type(enc_vec) == list:
+            vec = []
+            for i in range(len(enc_vec)):
+                vec.append(self.decrypt_(enc_vec[i]))
+            vec = np.concatenate(vec)
+        else:
+            vec = self.decrypt_(enc_vec)
+        return vec
+
+    def calc_size(self, enc_vec):
+        if type(enc_vec) == list:
+            size = 0
+            for ele in enc_vec:
+                size += ele.size()
+        else:
+            size = enc_vec.size()
+        return size
+
+    def multiple_mat_dotmul(self, mat1, mat2):
+        mat_nb = len(mat1)
+        enc_y = self.dotmul(mat1[0], mat2[0])
+        for i in range(1, mat_nb):
+            result = self.dotmul(mat1[i], mat2[i])
+            enc_y = self.add(enc_y, result)
+
+        return enc_y
+
+    def dotmul(self, mat1, mat2):
+        if type(mat1) == list and type(mat2) == list:
+            enc_y = []
+            for i in range(len(mat1)):
+                enc_y.append(mat1[i] * mat2[i])
+        elif type(mat1) != list and type(mat2) != list:
+            enc_y = mat1 * mat2
+        else:
+            raise TypeError("Dotmul not supported between list and tensor ")
+
+        return enc_y
+
+    def add(self, mat1, mat2):
+        if type(mat1) == list and type(mat2) == list:
+            enc_y = []
+            for i in range(len(mat1)):
+                enc_y.append(mat1[i] + mat2[i])
+        elif type(mat1) != list and type(mat2) != list:
+            enc_y = mat1 + mat2
+        else:
+            raise TypeError("Add not supported between list and tensor ")
+
+        return enc_y
+
+    def subtract(self, mat1, mat2):
+        if type(mat1) == list and type(mat2) == list:
+            enc_y = []
+            for i in range(len(mat1)):
+                enc_y.append(mat1[i] - mat2[i])
+        elif type(mat1) != list and type(mat2) != list:
+            enc_y = mat1 - mat2
+        else:
+            raise TypeError("Subtract not supported between list and tensor ")
+
+        return enc_y
+
+    def encrypt_conv(self, conv_weight, conv_bias, kernel_len, conv_windows_nb, in_channels_nb=1):
+        conv_weight = conv_weight.numpy()
+        conv_bias = conv_bias.numpy()
+        repeated_times = conv_windows_nb * self.input_nb
+        enc_channels = []
+        for weight, bias in zip(conv_weight, conv_bias):
+            enc_weights_ic = []
+            for ic in range(in_channels_nb):
+                ic_wt = weight[ic].reshape(-1)
+                enc_weights = []
+                # print(flat_wt.shape)
+                for i in range(kernel_len ** 2):
+                    rep_wt = ic_wt[i].repeat(repeated_times)
+                    enc_weight = self.encrypt(rep_wt)
+                    # enc_weight = self.encrypt(flat_wt[i].view(-1))
+                    enc_weight = self.send_enc_vector(enc_weight)
+                    enc_weights.append(enc_weight)
+
+                enc_weights_ic.append(enc_weights)
+
+            rep_bias = bias.reshape(-1).repeat(repeated_times)
+            enc_bias = self.encrypt(rep_bias)
+            # enc_bias = self.encrypt(bias.view(-1))
+            enc_bias = self.send_enc_vector(enc_bias)
+            enc_channels.append((enc_weights_ic, enc_bias))
+
+        return enc_channels
+
+    def prepare_shares_for_conv(self, x, windows_nb, kernel_len, stride, pad_width=((0, 0), (0, 0), (0, 0)), in_channels_nb=1):
         share1, share2 = self.generate_shares(x)
         self.time_dict["communication"] += communicate(share1) + communicate(share2)
 
-        processed_share1 = self.preprocess_for_conv(share1, windows_nb, kernel_len, stride, pad_width, in_channels_nb, vir_channels_nb)
+        processed_share1 = self.preprocess_for_conv(share1, windows_nb, kernel_len, stride, pad_width, in_channels_nb)
 
 
         start = time.process_time()
-        processed_share2 = self.preprocess_for_conv(share2, windows_nb, kernel_len, stride, pad_width, in_channels_nb, vir_channels_nb)
+        processed_share2 = self.preprocess_for_conv(share2, windows_nb, kernel_len, stride, pad_width, in_channels_nb)
         self.time_dict["total"] -= time.process_time() - start
 
-        return (processed_share1, processed_share2)
+        return processed_share1, processed_share2
 
-    def preprocess_for_conv(self, x, windows_nb, kernel_len, stride, pad_width=((0, 0), (0, 0), (0, 0)), in_channels_nb=1, vir_channels_nb=1):
+    def preprocess_for_conv(self, x, windows_nb, kernel_len, stride, pad_width=((0, 0), (0, 0), (0, 0)), in_channels_nb=1):
 
         dk = int(windows_nb ** 0.5)
         padded_x = np.pad(x, pad_width)
 
-        enc_features_ic = []
+        plain_features_ic = []
         for ic in range(in_channels_nb):
             x_ic = padded_x[ic]
-            enc_features = []
+            plain_features = []
             for i in range(kernel_len):
                 for j in range(kernel_len):
                     feature = np.zeros((dk, dk, self.input_nb))
@@ -57,125 +189,96 @@ class HybridModel(EncModel):
                             feature[i_prime, j_prime, :] = x_ic[stride * i_prime + i, stride * j_prime + j, :].reshape(
                                 1, 1, self.input_nb)
 
-                    feature = feature.reshape(-1, self.input_nb)
-                    chunk_size = math.ceil(feature.shape[0] / vir_channels_nb)
-                    added_rows_nb = chunk_size * vir_channels_nb - feature.shape[0]
-                    padded_feature = np.pad(feature, ((0, added_rows_nb), (0, 0)))
+                    plain_feature = self.plaintext(feature)
+                    plain_features.append(plain_feature)
 
-                    enc_features_vc = []
-                    for vc in range(vir_channels_nb):
-                        plain_feature_vc = self.plaintext(padded_feature[vc*chunk_size:(vc+1)*chunk_size, :])
-                        enc_features_vc.append(plain_feature_vc)
+            plain_features_ic.append(enc_features)
 
-                    enc_features.append(enc_features_vc)
+        plain_features_ic = np.array(enc_features_ic)
 
-            enc_features_ic.append(enc_features)
-
-        enc_features_ic = np.array(enc_features_ic)
-        enc_features_vc = np.transpose(enc_features_ic, (2, 0, 1))
-
-        return enc_features_vc.tolist()
+        return plain_features_ic.tolist()
 
     def sec_conv(self, enc_conv, shares):
-        enc_y_channel = []
+        enc_y_oc = []
         share1, share2 = shares
         for (enc_wt, enc_bias) in enc_conv:
-            enc_y_vc = []
-            for vc in range(len(share1)):
-                start = time.process_time()
-                enc_y_share1 = self.big_mat_dotmul(enc_wt[0], share1[vc][0])
-                for ic in range(1, len(enc_wt)):
-                    enc_y_share1 += self.big_mat_dotmul(enc_wt[ic], share1[vc][ic])
-                self.time_dict["total"] -= time.process_time() - start
+            start = time.process_time()
+            enc_y_share1 = self.multiple_mat_dotmul(enc_wt[0], share1[0])
+            for ic in range(1, len(enc_wt)):
+                result = self.multiple_mat_dotmul(enc_wt[ic], share1[ic])
+                enc_y_share1 = self.add(enc_y_share1, result)
+            self.time_dict["total"] -= time.process_time() - start
 
-                enc_y_share1 = self.send_enc_vector(enc_y_share1)
+            enc_y_share1 = self.send_enc_vector(enc_y_share1)
 
-                start = time.process_time()
-                enc_y_share2 = self.big_mat_dotmul(enc_wt[0], share2[vc][0])
-                for ic in range(1, len(enc_wt)):
-                    enc_y_share2 += self.big_mat_dotmul(enc_wt[ic], share2[vc][ic])
-                enc_y = enc_y_share1 + enc_y_share2 + enc_bias
-                self.time_dict["HE computation"] += time.process_time() - start
+            start = time.process_time()
+            enc_y_share2 = self.multiple_mat_dotmul(enc_wt[0], share2[0])
+            for ic in range(1, len(enc_wt)):
+                result = self.multiple_mat_dotmul(enc_wt[ic], share2[ic])
+                enc_y_share2 = self.add(enc_y_share2, result)
 
-                enc_y = self.send_enc_vector(enc_y)
-                enc_y_vc.append(enc_y)
+            enc_y = self.add(enc_y_share1, enc_y_share2)
+            enc_y = self.add(enc_y, enc_bias)
+            self.time_dict["HE computation"] += time.process_time() - start
 
-            enc_y_channel.append(enc_y_vc)
+            enc_y = self.send_enc_vector(enc_y)
+            enc_y_oc.append(enc_y)
 
-        return enc_y_channel
+        return enc_y_oc
 
-    def encrypt_fc(self, fc_weight, fc_bias, vir_channels_nb):
+    def encrypt_fc(self, fc_weight, fc_bias):
         fc_weight = fc_weight.numpy()
         fc_bias = fc_bias.numpy()
 
-        chunk_size = math.ceil(fc_weight.shape[0] / vir_channels_nb)
-        added_rows_nb = chunk_size * vir_channels_nb - fc_weight.shape[0]
-        padded_weight = np.pad(fc_weight, ((0, added_rows_nb), (0, 0)))
-        padded_bias = np.pad(fc_bias, (0, added_rows_nb))
-        rep_bias = np.tile(padded_bias.reshape(-1, 1), (1, self.input_nb))
+        rep_bias = np.tile(fc_bias.reshape(-1, 1), (1, self.input_nb))
+        enc_wts = self.enc_perm_mats(fc_weight)
+        enc_bias = self.encrypt(rep_bias.reshape(-1))
+        enc_bias = self.send_enc_vector(enc_bias, nb_receviers=2)
 
-        enc_vc = []
-        for vc in range(vir_channels_nb):
-            # weight = fc_weight[vc*chunk_size:(vc+1)*chunk_size, :]
-            weight = padded_weight[vc*chunk_size:(vc+1)*chunk_size, :]
-            enc_wts = self.enc_perm_mats(weight)
+        return enc_wts, enc_bias
 
-            bias = rep_bias[vc*chunk_size:(vc+1)*chunk_size, :]
-            enc_bias = self.encrypt(bias.reshape(-1))
-            enc_bias = self.send_enc_vector(enc_bias, nb_receviers=2)
-
-            enc_vc.append((enc_wts, enc_bias))
-
-        return enc_vc
-
-    def prepare_shares_for_fc(self, x, n_rows_left, vir_channles_nb=1):
+    def prepare_shares_for_fc(self, x, n_rows_left):
         share1, share2 = self.generate_shares(x)
         self.time_dict["communication"] += communicate(share1) + communicate(share2)
 
-        processed_share1 = self.preprocess_for_fc(share1, n_rows_left, vir_channles_nb)
+        processed_share1 = self.preprocess_for_fc(share1, n_rows_left)
 
         start = time.process_time()
-        processed_share2 = self.preprocess_for_fc(share2, n_rows_left, vir_channles_nb)
+        processed_share2 = self.preprocess_for_fc(share2, n_rows_left)
         self.time_dict["total"] -= time.process_time() - start
 
-        return (processed_share1, processed_share2)
+        return processed_share1, processed_share2
 
-    def preprocess_for_fc(self, matrix, n_rows_left, vir_channles_nb=1):
-        n_subrows_left = math.ceil(n_rows_left / vir_channles_nb)
-        enc_mats = self.perm_mats(matrix, n_subrows_left)
-        enc_mats_vc = [enc_mats for vc in range(vir_channles_nb)]
-
-        return enc_mats_vc
+    def preprocess_for_fc(self, matrix, n_rows_left):
+        enc_mats = self.perm_mats(matrix, n_rows_left)
+        return enc_mats
 
     def sec_fc(self, enc_fc, x_shares, send_back=True):
 
-        enc_y_vc = []
-        for vc in range(len(enc_fc)):
-            enc_wts, enc_bias = enc_fc[vc]
+        enc_wts, enc_bias = enc_fc
 
-            if x_shares is None:
-                enc_y = enc_bias
-            else:
-                x_share1 = x_shares[0][vc]
-                x_share2 = x_shares[1][vc]
+        if x_shares is None:
+            enc_y = enc_bias
+        else:
+            x_share1 = x_shares[0]
+            x_share2 = x_shares[1]
 
-                start = time.process_time()
-                enc_y_share1 = self.he_matmul(enc_wts, x_share1)
-                self.time_dict["total"] -= time.process_time() - start
+            start = time.process_time()
+            enc_y_share1 = self.he_matmul(enc_wts, x_share1)
+            self.time_dict["total"] -= time.process_time() - start
 
-                enc_y_share1 = self.send_enc_vector(enc_y_share1)
+            enc_y_share1 = self.send_enc_vector(enc_y_share1)
 
+            start = time.process_time()
+            enc_y_share2 = self.he_matmul(enc_wts, x_share2)
+            enc_y = self.add(enc_y_share1, enc_y_share2)
+            enc_y = self.add(enc_y, enc_bias)
+            self.time_dict["HE computation"] += time.process_time() - start
 
-                start = time.process_time()
-                enc_y_share2 = self.he_matmul(enc_wts, x_share2)
-                enc_y = enc_y_share1 + enc_y_share2 + enc_bias
-                self.time_dict["HE computation"] += time.process_time() - start
+        if send_back:
+            enc_y = self.send_enc_vector(enc_y)
 
-            if send_back:
-                enc_y = self.send_enc_vector(enc_y)
-            enc_y_vc.append(enc_y)
-
-        return enc_y_vc
+        return enc_y
 
     def enc_perm_mats(self, matrix):
         mat_nb = matrix.shape[1]
@@ -218,19 +321,16 @@ class HybridModel(EncModel):
         return plain_mats
 
     def he_matmul(self, mat1_ls, mat2_ls):
-        enc_y = mat1_ls[0] * mat2_ls[0]
-        for i in range(1, len(mat1_ls)):
-            enc_y += mat1_ls[i] * mat2_ls[i]
-
+        enc_y = self.multiple_mat_dotmul(mat1_ls, mat2_ls)
         return enc_y
 
-    def encrypt_gru(self, gru_weights, gru_biases, vir_channel_nb):
+    def encrypt_gru(self, gru_weights, gru_biases):
         hidden_size = int(gru_weights.shape[0] / 3)
         enc_paras = []
         for i in range(3):
             weight = gru_weights[i*hidden_size:(i+1)*hidden_size]
             bias = gru_biases[i*hidden_size:(i+1)*hidden_size]
-            enc_para = self.encrypt_fc(weight, bias, vir_channel_nb)
+            enc_para = self.encrypt_fc(weight, bias)
             enc_paras.append(enc_para)
 
         return enc_paras
@@ -282,7 +382,7 @@ class HybridModel(EncModel):
         return [share, mask]
 
     def predict(self, enc_y, output_size):
-        y = self.decrypt(enc_y[0])
+        y = self.decrypt(enc_y)
         y = y.reshape(-1, self.input_nb)[:output_size, :self.truth_nb]
         output = self.remainder(y)
 
@@ -383,15 +483,12 @@ class Sec_MNIST_CNN(HybridModel):
         self.conv1_out_channel_nb = 4
         self.conv1_windows_nb = 8 * 8
         self.conv1_padding = ((0, 0), (0, 0), (0, 0), (0, 0))
-        self.conv1_vir_channel_nb = 1
 
         self.fc1_input_size = 256
         self.fc1_output_size = 64
-        self.fc1_channel_nb = 1
 
         self.fc2_input_size = 64
         self.fc2_output_size = 10
-        self.fc2_channel_nb = 1
 
         self.context = None
         self.enc_conv1 = None
@@ -408,9 +505,9 @@ class Sec_MNIST_CNN(HybridModel):
     def init_model_paras(self, context, model_paras):
         self.context = context
         self.enc_conv1 = self.encrypt_conv(model_paras["conv1.weight"], model_paras["conv1.bias"],
-                                           self.conv1_kernel_len, self.conv1_windows_nb, self.conv1_in_channel_nb, self.conv1_vir_channel_nb)
-        self.enc_fc1 = self.encrypt_fc(model_paras["fc1.weight"], model_paras["fc1.bias"], self.fc1_channel_nb)
-        self.enc_fc2 = self.encrypt_fc(model_paras["fc2.weight"], model_paras["fc2.bias"], self.fc2_channel_nb)
+                                           self.conv1_kernel_len, self.conv1_windows_nb, self.conv1_in_channel_nb)
+        self.enc_fc1 = self.encrypt_fc(model_paras["fc1.weight"], model_paras["fc1.bias"])
+        self.enc_fc2 = self.encrypt_fc(model_paras["fc2.weight"], model_paras["fc2.bias"])
 
     def clear_model_paras(self):
         self.context = None
@@ -418,26 +515,11 @@ class Sec_MNIST_CNN(HybridModel):
         self.enc_fc1 = None
         self.enc_fc2 = None
 
-    def set_input_nb(self, input_nb):
-        print("Set input size:", input_nb)
-        self.input_nb = input_nb
-        _, channel_nbs = self.cal_optimal_allowed_size(np.array(input_nb))
-        channel_nbs = channel_nbs.reshape(-1).tolist()
-        self.conv1_vir_channel_nb, self.fc1_channel_nb, self.fc2_channel_nb = channel_nbs
-
-        # print(input_nb)
-        # print(self.conv1_vir_channel_nb)
-        # print(self.fc1_channel_nb)
-        # print(self.fc2_channel_nb)
-
     def sec_square1(self, enc_y):
         y_oc = []
         for oc in range(len(enc_y)):
-            y_vc = []
-            for vc in range(len(enc_y[0])):
-                y = self.decrypt(enc_y[oc][vc])
-                y_vc.append(y)
-            y = np.array(y_vc).reshape(-1, self.input_nb)[:self.conv1_windows_nb, :]
+            y = self.decrypt(enc_y[oc])
+            y = y.reshape(-1, self.input_nb)[:self.conv1_windows_nb, :]
             y = self.remainder(y)
             y = self.square(y)
             y_oc.append(y)
@@ -445,25 +527,17 @@ class Sec_MNIST_CNN(HybridModel):
         return x
 
     def sec_square2(self, enc_y):
-        if type(enc_y) == list:
-            y_list = []
-            for vc in range(len(enc_y)):
-                y = self.decrypt(enc_y[vc])
-                y_list.append(y)
-            y = np.array(y_list)
-        else:
-            y = self.decrypt(enc_y)
-
+        y = self.decrypt(enc_y)
         y = y.reshape(-1, self.input_nb)[:self.fc1_output_size, :]
         y = self.remainder(y)
         x = self.square(y)
         return x
 
     def preprocess_input(self, x):
-        x = x.reshape(self.input_nb, self.conv1_in_channel_nb, self.image_len, self.image_len)
+        x = x.reshape(self.input_shape)
         x = np.transpose(x, (1, 2, 3, 0))
         return self.preprocess_for_conv(x, self.conv1_windows_nb, self.conv1_kernel_len, self.conv1_stride,
-                                        self.conv1_padding, self.conv1_in_channel_nb, self.conv1_vir_channel_nb)
+                                        self.conv1_padding, self.conv1_in_channel_nb)
 
     def forward(self, x_shares, truth_shares):
 
@@ -471,11 +545,11 @@ class Sec_MNIST_CNN(HybridModel):
         x = self.sec_square1(enc_y_channel)
 
 
-        x_shares = self.prepare_shares_for_fc(x, self.fc1_output_size, vir_channles_nb=self.fc1_channel_nb)
+        x_shares = self.prepare_shares_for_fc(x, self.fc1_output_size)
         enc_y = self.sec_fc(self.enc_fc1, x_shares)
         x = self.sec_square2(enc_y).reshape(self.fc2_input_size, self.input_nb)
 
-        x_shares = self.prepare_shares_for_fc(x, self.fc2_output_size, vir_channles_nb=self.fc2_channel_nb)
+        x_shares = self.prepare_shares_for_fc(x, self.fc2_output_size)
         enc_y = self.sec_fc(self.enc_fc2, x_shares)
         pred_shares = self.predict(enc_y, self.fc2_output_size)
 
@@ -496,7 +570,6 @@ class Sec_MNIST_CNN(HybridModel):
 #         self.conv1_out_channel_nb = 6
 #         self.conv1_windows_nb = 28 * 28
 #         self.conv1_padding = ((0, 0), (0, 0), (0, 0), (0, 0))
-#         self.conv1_vir_channel_nb = 1
 #
 #         self.conv2_stride = 1
 #         self.conv2_kernel_len = 5
@@ -504,19 +577,15 @@ class Sec_MNIST_CNN(HybridModel):
 #         self.conv2_out_channel_nb = 16
 #         self.conv2_windows_nb = 10 * 10
 #         self.conv2_padding = self.conv1_padding
-#         self.conv2_vir_channel_nb = 1
 #
 #         self.fc1_input_size = 400
 #         self.fc1_output_size = 120
-#         self.fc1_channel_nb = 1
 #
 #         self.fc2_input_size = 120
 #         self.fc2_output_size = 84
-#         self.fc2_channel_nb = 1
 #
 #         self.fc3_input_size = 84
 #         self.fc3_output_size = 10
-#         self.fc3_channel_nb = 1
 #
 #         self.context = None
 #         self.enc_conv1 = None
@@ -540,27 +609,16 @@ class Sec_MNIST_CNN(HybridModel):
 #             self.fc3_input_size
 #         ]
 #
-#     def set_input_nb(self, input_nb):
-#         self.input_nb = input_nb
-#         _, channel_nbs = self.cal_optimal_allowed_size(np.array(input_nb))
-#         channel_nbs = channel_nbs.reshape(-1).tolist()
-#         self.conv1_vir_channel_nb, self.conv2_vir_channel_nb, self.fc1_channel_nb, self.fc2_channel_nb, self.fc3_channel_nb = channel_nbs
-#
-#         # print(input_nb)
-#         # print(self.conv1_vir_channel_nb)
-#         # print(self.fc1_channel_nb)
-#         # print(self.fc2_channel_nb)
-#
 #     def init_model_paras(self, context, model_paras):
 #         self.context = context
 #         self.enc_conv1 = self.encrypt_conv(model_paras["conv1.weight"], model_paras["conv1.bias"],
-#                                            self.conv1_kernel_len, self.conv1_windows_nb, self.conv1_in_channel_nb, self.conv1_vir_channel_nb)
+#                                            self.conv1_kernel_len, self.conv1_windows_nb, self.conv1_in_channel_nb)
 #         self.enc_conv2 = self.encrypt_conv(model_paras["conv2.weight"], model_paras["conv2.bias"],
-#                                            self.conv2_kernel_len, self.conv2_windows_nb, self.conv2_in_channel_nb, self.conv2_vir_channel_nb)
+#                                            self.conv2_kernel_len, self.conv2_windows_nb, self.conv2_in_channel_nb)
 #
-#         self.enc_fc1 = self.encrypt_fc(model_paras["fc1.weight"], model_paras["fc1.bias"], self.fc1_channel_nb)
-#         self.enc_fc2 = self.encrypt_fc(model_paras["fc2.weight"], model_paras["fc2.bias"], self.fc2_channel_nb)
-#         self.enc_fc3 = self.encrypt_fc(model_paras["fc3.weight"], model_paras["fc3.bias"], self.fc3_channel_nb)
+#         self.enc_fc1 = self.encrypt_fc(model_paras["fc1.weight"], model_paras["fc1.bias"])
+#         self.enc_fc2 = self.encrypt_fc(model_paras["fc2.weight"], model_paras["fc2.bias"])
+#         self.enc_fc3 = self.encrypt_fc(model_paras["fc3.weight"], model_paras["fc3.bias"])
 #
 #     def clear_model_paras(self):
 #         self.context = None
@@ -573,11 +631,7 @@ class Sec_MNIST_CNN(HybridModel):
 #     def sec_relu_maxpool(self, enc_y, shape, win_nb):
 #         y_oc = []
 #         for oc in range(len(enc_y)):
-#             y_vc = []
-#             for vc in range(len(enc_y[0])):
-#                 y = self.decrypt(enc_y[oc][vc])
-#                 y_vc.append(y)
-#             y = np.array(y_vc)
+#             y = self.decrypt(enc_y[oc])
 #             y = y.reshape(-1, self.input_nb)[:win_nb, :]
 #             y = y.reshape(shape)
 #             y = self.remainder(y)
@@ -588,25 +642,17 @@ class Sec_MNIST_CNN(HybridModel):
 #         return x
 #
 #     def sec_relu(self, enc_y, out_size):
-#         if type(enc_y) == list:
-#             y_list = []
-#             for vc in range(len(enc_y)):
-#                 y = self.decrypt(enc_y[vc])
-#                 y_list.append(y)
-#             y = np.array(y_list)
-#         else:
-#             y = self.decrypt(enc_y)
-#
+#         y = self.decrypt(enc_y)
 #         y = y.reshape(-1, self.input_nb)[:out_size, :]
 #         y = self.remainder(y)
 #         x = self.relu(y)
 #         return x
 #
 #     def preprocess_input(self, x):
-#         x = x.reshape(self.input_nb, self.conv1_in_channel_nb, self.image_len, self.image_len)
+#         x = x.reshape(self.input_shape)
 #         x = np.transpose(x, (1, 2, 3, 0))
 #         return self.preprocess_for_conv(x, self.conv1_windows_nb, self.conv1_kernel_len, self.conv1_stride,
-#                                         self.conv1_padding, self.conv1_in_channel_nb, self.conv1_vir_channel_nb)
+#                                         self.conv1_padding, self.conv1_in_channel_nb)
 #
 #     def forward(self, x_shares, truth_shares):
 #
@@ -614,26 +660,24 @@ class Sec_MNIST_CNN(HybridModel):
 #         x = self.sec_relu_maxpool(enc_y_channel, [int(self.conv1_windows_nb ** 0.5), int(self.conv1_windows_nb ** 0.5), self.input_nb], self.conv1_windows_nb)
 #
 #         x_shares = self.prepare_shares_for_conv(x, self.conv2_windows_nb, self.conv2_kernel_len, self.conv2_stride,
-#                                          self.conv2_padding, self.conv2_in_channel_nb, self.conv2_vir_channel_nb)
+#                                          self.conv2_padding, self.conv2_in_channel_nb)
 #         enc_y_channel = self.sec_conv(self.enc_conv2, x_shares)
 #         x = self.sec_relu_maxpool(enc_y_channel, [int(self.conv2_windows_nb ** 0.5), int(self.conv2_windows_nb ** 0.5), self.input_nb], self.conv2_windows_nb).reshape(self.fc1_input_size, self.input_nb)
 #
-#         x_shares = self.prepare_shares_for_fc(x, self.fc1_output_size, vir_channles_nb=self.fc1_channel_nb)
+#         x_shares = self.prepare_shares_for_fc(x, self.fc1_output_size)
 #         enc_y = self.sec_fc(self.enc_fc1, x_shares)
 #         x = self.sec_relu(enc_y, self.fc1_output_size).reshape(self.fc2_input_size, self.input_nb)
 #
-#         x_shares = self.prepare_shares_for_fc(x, self.fc2_output_size, vir_channles_nb=self.fc2_channel_nb)
+#         x_shares = self.prepare_shares_for_fc(x, self.fc2_output_size)
 #         enc_y = self.sec_fc(self.enc_fc2, x_shares)
 #         x = self.sec_relu(enc_y, self.fc2_output_size).reshape(self.fc3_input_size, self.input_nb)
 #
-#         x_shares = self.prepare_shares_for_fc(x, self.fc3_output_size, vir_channles_nb=self.fc3_channel_nb)
+#         x_shares = self.prepare_shares_for_fc(x, self.fc3_output_size)
 #         enc_y = self.sec_fc(self.enc_fc3, x_shares)
 #         pred_shares = self.predict(enc_y, self.fc3_output_size)
 #
 #         return self.sec_compare(pred_shares, truth_shares)
-#
-#     def __call__(self, *args, **kwargs):
-#         return self.forward(*args, **kwargs)
+
 
 
 class Sec_mRNA_RNN(HybridModel):
@@ -645,12 +689,10 @@ class Sec_mRNA_RNN(HybridModel):
 
         self.gru_input_size = self.input_shape[2]
         self.gru_output_size = 32
-        self.gru_channel_nb = 1
         self.seq_len = self.input_shape[1]
 
         self.fc_input_size = 32
         self.fc_output_size = 2
-        self.fc_channel_nb = 1
 
         self.context = None
         self.enc_gru_ir = None
@@ -667,27 +709,16 @@ class Sec_mRNA_RNN(HybridModel):
             self.fc_input_size,
         ]
 
-    def set_input_nb(self, input_nb):
-        self.input_nb = input_nb
-
-    def cal_optimal_batch_size(self, test_size):
-        return 128
-
-    # def set_input_nb(self, input_nb):
-    #     print("Set input size:", input_nb)
-    #     self.input_nb = input_nb
-    #     _, channel_nbs = self.cal_optimal_allowed_size(np.array(input_nb))
-    #     channel_nbs = channel_nbs.reshape(-1).tolist()
-    #     self.gru_channel_nb = channel_nbs[0]
-    #     print(self.gru_channel_nb)
+    # def cal_optimal_batch_size(self, test_size):
+    #     return 128
 
     def init_model_paras(self, context, model_paras):
         self.context = context
         self.enc_gru_ir, self.enc_gru_iz, self.enc_gru_in = self.encrypt_gru(model_paras["rnn.weight_ih_l0"],
-                                                            model_paras["rnn.bias_ih_l0"], self.gru_channel_nb)
+                                                            model_paras["rnn.bias_ih_l0"])
         self.enc_gru_hr, self.enc_gru_hz, self.enc_gru_hn = self.encrypt_gru(model_paras["rnn.weight_hh_l0"],
-                                                            model_paras["rnn.bias_hh_l0"], self.gru_channel_nb)
-        self.enc_fc = self.encrypt_fc(model_paras["fc.weight"], model_paras["fc.bias"], self.fc_channel_nb)
+                                                            model_paras["rnn.bias_hh_l0"])
+        self.enc_fc = self.encrypt_fc(model_paras["fc.weight"], model_paras["fc.bias"])
 
     def clear_model_paras(self):
         self.context = None
@@ -705,31 +736,19 @@ class Sec_mRNA_RNN(HybridModel):
         inputs = []
         for i in range(self.seq_len):
             input = x[i]
-            input = self.preprocess_for_fc(input, self.gru_output_size, self.gru_channel_nb)
+            input = self.preprocess_for_fc(input, self.gru_output_size)
             inputs.append(input)
         return inputs
 
     def sec_sigmoid(self, enc_y):
-        if type(enc_y) == list:
-            y = []
-            for ele in enc_y:
-                y.append(self.decrypt(ele))
-            y = np.concatenate(y)
-        else:
-            y = self.decrypt(enc_y)
+        y = self.decrypt(enc_y)
         y = y.reshape(-1, self.input_nb)
         y = self.remainder(y)
         x = self.sigmoid(y)
         return x
 
     def sec_tanh(self, enc_y):
-        if type(enc_y) == list:
-            y = []
-            for ele in enc_y:
-                y.append(self.decrypt(ele))
-            y = np.concatenate(y)
-        else:
-            y = self.decrypt(enc_y)
+        y = self.decrypt(enc_y)
         y = y.reshape(-1, self.input_nb)
         y = self.remainder(y)
         x = self.tanh(y)
@@ -745,18 +764,18 @@ class Sec_mRNA_RNN(HybridModel):
         processed_share2 = self.plaintext(share2)
         self.time_dict["total"] -= time.process_time() - start
 
-        return (processed_share1, processed_share2)
+        return processed_share1, processed_share2
 
     def sec_hardmard_prodcut(self, enc_x1, x2_shares, send_back=True):
         start = time.process_time()
-        enc_y_share1 = enc_x1 * x2_shares[0]
+        enc_y_share1 = self.dotmul(enc_x1, x2_shares[0])
         self.time_dict["total"] -= time.process_time() - start
 
         enc_y_share1 = self.send_enc_vector(enc_y_share1)
 
         start = time.process_time()
-        enc_y_share2 = enc_x1 * x2_shares[1]
-        enc_y = enc_y_share1 + enc_y_share2
+        enc_y_share2 = self.dotmul(enc_x1, x2_shares[1])
+        enc_y = self.add(enc_y_share1, enc_y_share2)
         self.time_dict["HE computation"] += time.process_time() - start
 
         if send_back:
@@ -765,16 +784,18 @@ class Sec_mRNA_RNN(HybridModel):
         return enc_y
 
     def compute_enc_gru_r(self, x, h):
-        enc_r = self.sec_fc(self.enc_gru_ir, x, send_back=False)[0]
-        enc_r += self.sec_fc(self.enc_gru_hr, h, send_back=False)[0]
+        enc_r1 = self.sec_fc(self.enc_gru_ir, x, send_back=False)
+        enc_r2 = self.sec_fc(self.enc_gru_hr, h, send_back=False)
+        enc_r = self.add(enc_r1, enc_r2)
         enc_r = self.send_enc_vector(enc_r)
         r = self.sec_sigmoid(enc_r)
         r_shares = self.prepare_shares_for_hadamard(r)
         return r_shares
 
     def compute_enc_gru_z(self, x, h):
-        enc_z = self.sec_fc(self.enc_gru_iz, x, send_back=False)[0]
-        enc_z += self.sec_fc(self.enc_gru_hz, h, send_back=False)[0]
+        enc_z1 = self.sec_fc(self.enc_gru_iz, x, send_back=False)
+        enc_z2 = self.sec_fc(self.enc_gru_hz, h, send_back=False)
+        enc_z = self.add(enc_z1, enc_z2)
         enc_z = self.send_enc_vector(enc_z)
         z = self.sec_sigmoid(enc_z)
         enc_z = self.encrypt(z)
@@ -782,8 +803,9 @@ class Sec_mRNA_RNN(HybridModel):
         return enc_z
 
     def compute_enc_gru_n(self, x, h, r):
-        enc_n = self.sec_fc(self.enc_gru_in, x, send_back=False)[0] \
-                + self.sec_hardmard_prodcut(self.sec_fc(self.enc_gru_hn, h, send_back=False)[0], r, send_back=False)
+        enc_n1 = self.sec_fc(self.enc_gru_in, x, send_back=False)
+        enc_n2 = self.sec_hardmard_prodcut(self.sec_fc(self.enc_gru_hn, h, send_back=False), r, send_back=False)
+        enc_n = self.add(enc_n1, enc_n2)
         enc_n = self.send_enc_vector(enc_n)
         n = self.sec_tanh(enc_n)
         n_shares = self.prepare_shares_for_hadamard(n)
@@ -791,10 +813,11 @@ class Sec_mRNA_RNN(HybridModel):
         return n_shares
 
     def compute_enc_gru_h(self, z, n, h):
-        one_minus_z = self.plaintext(np.ones(z.size())) - z
+        one_minus_z = self.subtract(self.plaintext(np.ones(self.calc_size(z))), z)
         enc_h = self.sec_hardmard_prodcut(one_minus_z, n, send_back=False)
         if not (h is None):
-            enc_h += self.sec_hardmard_prodcut(z, h, send_back=False)
+            result = self.sec_hardmard_prodcut(z, h, send_back=False)
+            enc_h = self.add(enc_h, result)
         enc_h = self.send_enc_vector(enc_h)
         return enc_h
 
@@ -816,12 +839,9 @@ class Sec_mRNA_RNN(HybridModel):
 
     def forward(self, x_shares_seq, truth_shares):
 
-
-        # h_shares = self.gru_init_h_shares
-        # print(id(h_shares))
         h = self.sec_rnn_gru(x_shares_seq)
 
-        x_shares = self.prepare_shares_for_fc(h, self.fc_output_size, vir_channles_nb=self.fc_channel_nb)
+        x_shares = self.prepare_shares_for_fc(h, self.fc_output_size)
         enc_y = self.sec_fc(self.enc_fc, x_shares)
         pred_shares = self.predict(enc_y, self.fc_output_size)
 
@@ -837,7 +857,6 @@ class Sec_AGNEWS_Logi(HybridModel):
 
         self.fc_input_size = self.input_shape[1]
         self.fc_output_size = 4
-        self.fc_channel_nb = 1
 
         self.context = None
         self.enc_fc = None
@@ -849,18 +868,11 @@ class Sec_AGNEWS_Logi(HybridModel):
 
     def init_model_paras(self, context, model_paras):
         self.context = context
-        self.enc_fc = self.encrypt_fc(model_paras["fc.weight"], model_paras["fc.bias"], self.fc_channel_nb)
+        self.enc_fc = self.encrypt_fc(model_paras["fc.weight"], model_paras["fc.bias"])
 
     def clear_model_paras(self):
         self.context = None
         self.enc_fc = None
-
-    def set_input_nb(self, input_nb):
-        print("Set input size:", input_nb)
-        self.input_nb = input_nb
-        _, channel_nbs = self.cal_optimal_allowed_size(np.array(input_nb))
-        channel_nbs = channel_nbs.reshape(-1).tolist()
-        self.fc_channel_nb = channel_nbs[0]
 
     def preprocess_input(self, x):
         x = x.reshape(self.input_shape)
@@ -884,7 +896,6 @@ class Sec_BANK_Logi(HybridModel):
 
         self.fc_input_size = self.input_shape[1]
         self.fc_output_size = 2
-        self.fc_channel_nb = 1
 
         self.context = None
         self.enc_fc = None
@@ -896,18 +907,11 @@ class Sec_BANK_Logi(HybridModel):
 
     def init_model_paras(self, context, model_paras):
         self.context = context
-        self.enc_fc = self.encrypt_fc(model_paras["fc.weight"], model_paras["fc.bias"], self.fc_channel_nb)
+        self.enc_fc = self.encrypt_fc(model_paras["fc.weight"], model_paras["fc.bias"])
 
     def clear_model_paras(self):
         self.context = None
         self.enc_fc = None
-
-    def set_input_nb(self, input_nb):
-        print("Set input size:", input_nb)
-        self.input_nb = input_nb
-        _, channel_nbs = self.cal_optimal_allowed_size(np.array(input_nb))
-        channel_nbs = channel_nbs.reshape(-1).tolist()
-        self.fc_channel_nb = channel_nbs[0]
 
     def preprocess_input(self, x):
         x = x.reshape(self.input_shape)
@@ -915,7 +919,6 @@ class Sec_BANK_Logi(HybridModel):
         return self.preprocess_for_fc(x, self.fc_output_size)
 
     def forward(self, x_shares, truth_shares):
-
         enc_y = self.sec_fc(self.enc_fc, x_shares)
         pred_shares = self.predict(enc_y, self.fc_output_size)
 

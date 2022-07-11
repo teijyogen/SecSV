@@ -21,22 +21,22 @@ class EncModel:
         self.context = None
         self.time_dict = {}
 
-    def encrypt(self, vector):
+    def encrypt_(self, vector):
         start = time.process_time()
         enc_vec = ts.ckks_vector(self.context, vector.reshape(-1))
         self.time_dict["encryption"] += time.process_time() - start
         return enc_vec
 
-    def decrypt(self, enc_vec):
+    def decrypt_(self, enc_vec):
         start = time.process_time()
         vec = np.array(enc_vec.decrypt())
         self.time_dict["decryption"] += time.process_time() - start
         return vec
 
-    def plaintext(self, mat):
+    def plaintext_(self, mat):
         return ts.plain_tensor(mat.reshape(-1), dtype='float')
 
-    def send_enc_vector(self, enc_vec, return_bytes=False, nb_receviers=1):
+    def send_enc_vector_(self, enc_vec, return_bytes=False, nb_receviers=1):
         enc_vec_bytes = enc_vec.serialize()
         self.time_dict["communication"] += communicate(enc_vec_bytes) * nb_receviers
         if return_bytes:
@@ -45,48 +45,16 @@ class EncModel:
             enc_vec = ts.CKKSVector.load(self.context, enc_vec_bytes)
             return enc_vec
 
-    def send_big_enc_vector(self, enc_vec, return_bytes=False):
-        enc_vec_ls = []
-        for ele in enc_vec:
-            new_ele = self.send_enc_vector(ele, return_bytes=return_bytes)
-            enc_vec_ls.append(new_ele)
-        return enc_vec_ls
-
-    def big_mat_dotmul(self, mat1, mat2):
-        mat_nb = len(mat1)
-        enc_y = mat1[0] * mat2[0]
-        for i in range(1, mat_nb):
-            enc_y += mat1[i] * mat2[i]
-
-        return enc_y
-
-    def encrypt_conv(self, conv_weight, conv_bias, kernel_len, conv_windows_nb, in_channels_nb=1, vir_channels_nb=1):
-        conv_weight = conv_weight.numpy()
-        conv_bias = conv_bias.numpy()
-        repeated_times = math.ceil(conv_windows_nb / vir_channels_nb) * self.input_nb
-        enc_channels = []
-        for weight, bias in zip(conv_weight, conv_bias):
-            enc_weights_ic = []
-            for ic in range(in_channels_nb):
-                ic_wt = weight[ic].reshape(-1)
-                enc_weights = []
-                # print(flat_wt.shape)
-                for i in range(kernel_len ** 2):
-                    rep_wt = ic_wt[i].repeat(repeated_times)
-                    enc_weight = self.encrypt(rep_wt)
-                    # enc_weight = self.encrypt(flat_wt[i].view(-1))
-                    enc_weight = self.send_enc_vector(enc_weight)
-                    enc_weights.append(enc_weight)
-
-                enc_weights_ic.append(enc_weights)
-
-            rep_bias = bias.reshape(-1).repeat(repeated_times)
-            enc_bias = self.encrypt(rep_bias)
-            # enc_bias = self.encrypt(bias.view(-1))
-            enc_bias = self.send_enc_vector(enc_bias)
-            enc_channels.append((enc_weights_ic, enc_bias))
-
-        return enc_channels
+    def send_enc_vector(self, enc_vec, return_bytes=False, nb_receviers=1):
+        if type(enc_vec) == list:
+            enc_vec_ls = []
+            for ele in enc_vec:
+                new_ele = self.send_enc_vector_(ele, return_bytes=return_bytes, nb_receviers=nb_receviers)
+                enc_vec_ls.append(new_ele)
+            return enc_vec_ls
+        else:
+            enc_vec = self.send_enc_vector_(enc_vec, return_bytes=return_bytes, nb_receviers=nb_receviers)
+            return enc_vec
 
     def relu(self, vec):
         start = time.process_time()
@@ -125,6 +93,30 @@ class HEModel(EncModel):
     def __init__(self):
         super(HEModel, self).__init__()
 
+    def encrypt(self, mat, big_mat=False, subdim=None, residual=False):
+
+        if big_mat:
+            enc_vec = []
+            if residual:
+                nb_mat = 1
+            else:
+                nb_mat = mat.shape[0] // subdim
+
+            for i in range(nb_mat):
+                vec = mat[i*subdim:(i+1)*subdim, :]
+                enc_vec.append(self.encrypt_(vec))
+        else:
+            enc_vec = self.encrypt_(mat)
+
+        return enc_vec
+
+    def encrypt_and_send(self, mat, big_mat=False, n_rows_left=-1, return_bytes=False, residual=False):
+        enc_mat = self.encrypt(mat, big_mat=big_mat, subdim=n_rows_left, residual=residual)
+        enc_mat = self.send_enc_vector(enc_mat, return_bytes=return_bytes)
+        return enc_mat
+
+    def decrypt(self, enc_vec):
+        return self.decrypt_(enc_vec)
     # def shift_byrows(self, enc_vec, n_cols, steps=1):
     #     return enc_vec.rotate_vector(steps*n_cols)
     #
@@ -141,6 +133,48 @@ class HEModel(EncModel):
     #     temp.rotate_vector_inplace(step-n_cols)
     #
     #     return res + temp
+
+    def dotmul(self, mat1, mat2):
+        if type(mat1) == list and type(mat2) == list:
+            enc_y = mat1[0] * mat2[0]
+            for i in range(1, len(mat1)):
+                enc_y += mat1[i] * mat2[i]
+        elif type(mat1) != list and type(mat2) != list:
+            enc_y = mat1 * mat2
+        else:
+            raise TypeError("Dotmul not supported between list and tensor ")
+        return enc_y
+
+    def multiple_mat_dotmul(self, mat1_ls, mat2_ls):
+        return self.dotmul(mat1_ls, mat2_ls)
+
+    def encrypt_conv(self, conv_weight, conv_bias, kernel_len, conv_windows_nb, in_channels_nb=1, vir_channels_nb=1):
+        conv_weight = conv_weight.numpy()
+        conv_bias = conv_bias.numpy()
+        repeated_times = math.ceil(conv_windows_nb / vir_channels_nb) * self.input_nb
+        enc_channels = []
+        for weight, bias in zip(conv_weight, conv_bias):
+            enc_weights_ic = []
+            for ic in range(in_channels_nb):
+                ic_wt = weight[ic].reshape(-1)
+                enc_weights = []
+                # print(flat_wt.shape)
+                for i in range(kernel_len ** 2):
+                    rep_wt = ic_wt[i].repeat(repeated_times)
+                    enc_weight = self.encrypt(rep_wt)
+                    # enc_weight = self.encrypt(flat_wt[i].view(-1))
+                    enc_weight = self.send_enc_vector(enc_weight)
+                    enc_weights.append(enc_weight)
+
+                enc_weights_ic.append(enc_weights)
+
+            rep_bias = bias.reshape(-1).repeat(repeated_times)
+            enc_bias = self.encrypt(rep_bias)
+            # enc_bias = self.encrypt(bias.view(-1))
+            enc_bias = self.send_enc_vector(enc_bias)
+            enc_channels.append((enc_weights_ic, enc_bias))
+
+        return enc_channels
 
     def preprocess_for_conv(self, x, windows_nb, kernel_len, stride, pad_width=((0, 0), (0, 0), (0, 0)), in_channels_nb=1, vir_channels_nb=1, return_bypes=False):
 
@@ -185,9 +219,9 @@ class HEModel(EncModel):
             enc_y_vc = []
             for vc in range(len(enc_features)):
                 start = time.process_time()
-                enc_y = self.big_mat_dotmul(enc_wt[0], enc_features[vc][0])
+                enc_y = self.multiple_mat_dotmul(enc_wt[0], enc_features[vc][0])
                 for ic in range(1, len(enc_wt)):
-                    enc_y += self.big_mat_dotmul(enc_wt[ic], enc_features[vc][ic])
+                    enc_y += self.multiple_mat_dotmul(enc_wt[ic], enc_features[vc][ic])
                 enc_y += enc_bias
                 self.time_dict["HE computation"] += time.process_time() - start
 
@@ -288,96 +322,51 @@ class HEModel(EncModel):
 
         return enc_mats
 
-    def encrypt_big_message(self, big_mat, subdim, residual=False):
-        start = time.process_time()
-
-        enc_vecs = []
-
-        if residual:
-            nb_mat = 1
-        else:
-            nb_mat = big_mat.shape[0] // subdim
-
-        for i in range(nb_mat):
-            vec = big_mat[i*subdim:(i+1)*subdim, :].reshape(-1)
-            enc_vecs.append(ts.ckks_vector(self.context, vec))
-
-
-        self.time_dict["encryption"] += time.process_time() - start
-
-        return enc_vecs
-
-    def encrypt_and_send(self, mat, divide=False, n_rows_left=-1, return_bytes=False, residual=False):
-        if divide:
-            enc_mat = self.encrypt_big_message(mat, n_rows_left, residual=residual)
-            enc_mat = self.send_big_enc_vector(enc_mat, return_bytes=return_bytes)
-        else:
-            enc_mat = self.encrypt(mat)
-            enc_mat = self.send_enc_vector(enc_mat, return_bytes=return_bytes)
-
-        return enc_mat
-
     def generate_perms(self, mat, n_rows_left, left=True, return_bytes=False):
         mat_len = mat.shape[0]
         parallel_mat_nb = n_rows_left
         residual_mat_nb = mat_len % n_rows_left
-        divide = mat_len ** 2 > self.n_slots
+        big_mat = mat_len ** 2 > self.n_slots
 
         if left:
             mat = sigma(mat)
-            enc_mats = [self.encrypt_and_send(mat, divide=divide, n_rows_left=n_rows_left, return_bytes=return_bytes)]
+            enc_mats = [self.encrypt_and_send(mat, big_mat=big_mat, n_rows_left=n_rows_left, return_bytes=return_bytes)]
 
             for i in range(1, parallel_mat_nb):
-                # mat = np.roll(mat, -1, axis=1)
-                # enc_mats.append(
-                #     self.encrypt_and_send(mat, divide=divide, n_rows_left=n_rows_left, return_bytes=return_bytes))
                 new_mat = np.roll(mat, -i, axis=1)
                 enc_mats.append(
-                    self.encrypt_and_send(new_mat, divide=divide, n_rows_left=n_rows_left, return_bytes=return_bytes))
+                    self.encrypt_and_send(new_mat, big_mat=big_mat, n_rows_left=n_rows_left, return_bytes=return_bytes))
 
-            # mat = np.roll(mat, -(mat_len - residual_mat_nb - parallel_mat_nb), axis=1)
             for i in range(mat_len - residual_mat_nb, mat_len):
-                # mat = np.roll(mat, -1, axis=1)
-                # enc_mats.append(self.encrypt_and_send(mat, divide=divide, residual=True, return_bytes=return_bytes))
                 new_mat = np.roll(mat, -i, axis=1)
-                enc_mats.append(self.encrypt_and_send(new_mat, divide=divide, n_rows_left=n_rows_left, residual=True, return_bytes=return_bytes))
+                enc_mats.append(self.encrypt_and_send(new_mat, big_mat=big_mat, n_rows_left=n_rows_left, residual=True, return_bytes=return_bytes))
         else:
             mat = tau(mat)
-            enc_mats = [self.encrypt_and_send(mat, divide=divide, n_rows_left=n_rows_left, return_bytes=return_bytes)]
+            enc_mats = [self.encrypt_and_send(mat, big_mat=big_mat, n_rows_left=n_rows_left, return_bytes=return_bytes)]
             for i in range(1, parallel_mat_nb):
-                # mat = np.roll(mat, -1, axis=0)
-                # enc_mats.append(
-                #     self.encrypt_and_send(mat, divide=divide, n_rows_left=n_rows_left, return_bytes=return_bytes))
                 new_mat = np.roll(mat, -i, axis=0)
                 enc_mats.append(
-                    self.encrypt_and_send(new_mat, divide=divide, n_rows_left=n_rows_left, return_bytes=return_bytes))
+                    self.encrypt_and_send(new_mat, big_mat=big_mat, n_rows_left=n_rows_left, return_bytes=return_bytes))
 
-            # mat = np.roll(mat, -(mat_len - residual_mat_nb - parallel_mat_nb), axis=0)
             for i in range(mat_len - residual_mat_nb, mat_len):
-                # mat = np.roll(mat, -1, axis=0)
-                # enc_mats.append(self.encrypt_and_send(mat, divide=divide, residual=True, return_bytes=return_bytes))
                 new_mat = np.roll(mat, -i, axis=0)
-                enc_mats.append(self.encrypt_and_send(new_mat, divide=divide, n_rows_left=n_rows_left, residual=True, return_bytes=return_bytes))
+                enc_mats.append(self.encrypt_and_send(new_mat, big_mat=big_mat, n_rows_left=n_rows_left, residual=True, return_bytes=return_bytes))
 
         return enc_mats
 
     def he_matmul(self, mat1_ls, mat2_ls, nb_residual_mat=0):
         mat_nb = len(mat1_ls) - nb_residual_mat
 
+        enc_y = self.dotmul(mat1_ls[0], mat2_ls[0])
+        for i in range(1, mat_nb):
+            res = self.dotmul(mat1_ls[i], mat2_ls[i])
+            enc_y += res
+
         if type(mat1_ls[0]) == list:
-            enc_y = self.big_mat_dotmul(mat1_ls[0], mat2_ls[0])
-            for i in range(1, mat_nb):
-                res = self.big_mat_dotmul(mat1_ls[i], mat2_ls[i])
-                enc_y += res
             return enc_y
         else:
             mat_len = int(mat1_ls[0].size() ** 0.5)
             subdim = mat_nb
-
-            enc_y = mat1_ls[0] * mat2_ls[0]
-
-            for i in range(1, mat_nb):
-                enc_y += mat1_ls[i] * mat2_ls[i]
 
             if subdim < mat_len:
                 double_times = int(math.log(mat_len / subdim, 2))
@@ -419,7 +408,7 @@ class HEModel(EncModel):
         y = y.reshape(shape)[:output_size, :self.truth_nb]
         pred = np.argmax(y, axis=0)
 
-        enc_pred = self.encrypt(pred.reshape(-1))
+        enc_pred = self.encrypt(pred)
         enc_pred = self.send_enc_vector(enc_pred)
 
         return enc_pred
@@ -741,7 +730,7 @@ class HE_mRNA_RNN(HEModel):
         return enc_n
 
     def compute_enc_gru_h(self, z, n, h):
-        one_minus_z = self.plaintext(np.ones(z.size())) - z
+        one_minus_z = self.plaintext_(np.ones(z.size())) - z
         enc_h = one_minus_z * n
         if not (h is None):
             enc_h += z * h
