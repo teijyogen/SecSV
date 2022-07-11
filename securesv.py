@@ -38,7 +38,7 @@ class SecSV:
         self.msv_dict = {}
         self.ssv_dict_skip = {}
         self.msv_dict_skip = {}
-        self.dirs = "data/"
+        self.dirs = clients.data_dirs
         self.test_size = len(self.test_data)
         self.input_shape = hybridmodel.input_shape
         self.time_dict = {}
@@ -60,6 +60,8 @@ class SecSV:
         self.n_slots = self.poly_modulus_degree // 2
         self.hybridmodel.n_slots = self.n_slots
         self.batch_size = self.hybridmodel.cal_optimal_batch_size(self.test_size)
+        self.input_nb = None
+        self.debug = False
 
     def init_time_dict(self):
         self.time_dict["total"] = 0.0
@@ -136,6 +138,8 @@ class SecSV:
         max_size = packed_feature_share1_ls[0].shape[0]
         self.hybridmodel.set_input_nb(max_size)
 
+        if batch_size == self.batch_size:
+            self.input_nb = max_size
 
         processed_shares = []
         for i in range(batch_nb):
@@ -268,16 +272,16 @@ class SecSV:
         sec_model.init_model_paras(context, model_paras)
 
         correct_ids_ls = []
-        pbar = tqdm(self.processed_shares, mininterval=60)
-        # pbar = tqdm(self.processed_shares)
-        # pbar = self.processed_shares
+        if self.debug:
+            pbar = tqdm(self.processed_shares)
+        else:
+            pbar = tqdm(self.processed_shares, mininterval=60)
+
         for x_shares, truth_shares, idxs in pbar:
             sec_model.truth_nb = idxs.shape[0]
-            # if size != sec_model.input_nb:
-            #     sec_model.input_nb = size
-            #     sec_model.init_model_paras(context, model_paras)
-
             correct_ids = idxs[sec_model(x_shares, truth_shares)]
+            if self.debug:
+                print(len(correct_ids) / idxs.shape[0])
             correct_ids_ls.append(correct_ids)
 
         correct_ids = np.concatenate(correct_ids_ls)
@@ -291,17 +295,15 @@ class SecSV:
     def eval_init_model(self):
         print("\nEvaluate the initial model")
         self.processed_shares = self.all_processed_shares
-        init_model = torch.load(self.clients.init_model)
+        if self.debug:
+            init_model = clients.get_global_model(self.T-1)
+        else:
+            init_model = clients.get_init_model()
         model_paras = init_model.state_dict()
         correct_ids = self.eval(model_paras)
         self.init_accs[0] = len(correct_ids) / self.test_size
-        # self.init_accs[0] = 0.1
 
-        # model = torch.load("model/mnist_cnn1/dir0.5/0/rnd9/global.pkl")
-        # model = torch.load("model/cifar_cnn2/dir0.5/0/rnd9/global.pkl")
-        # model_paras = model.state_dict()
-        # correct_ids = self.eval(model_paras)
-        # print(len(correct_ids)/self.test_size)
+        print(len(correct_ids)/self.test_size)
 
     def intersection_except(self, samples_dict, except_key):
         intersection_samples = self.idx_set
@@ -331,7 +333,7 @@ class SecSV:
     def eval_utilities(self, subsets, correct_samples_dict, acc_dict, rnd, naive_samples_dict={}, skip=False):
         clients = self.clients
         if not skip:
-            self.hybridmodel.set_input_nb(self.batch_size)
+            self.hybridmodel.set_input_nb(self.input_nb)
             self.processed_shares = self.all_processed_shares
         subset_ls = list(subsets)
         subset_ls.sort(key=lambda x:len(x), reverse=False)
@@ -349,7 +351,7 @@ class SecSV:
                     acc_dict[subset] = acc
                     continue
                 elif len(indices) == self.test_size:
-                    self.hybridmodel.set_input_nb(self.batch_size)
+                    self.hybridmodel.set_input_nb(self.input_nb)
                     self.processed_shares = self.all_processed_shares
                 else:
                     self.shares_loader(indices)
@@ -422,6 +424,7 @@ class SecSV:
         self.context = None
         self.all_processed_shares = []
         self.processed_shares = []
+        manager = mp.Manager()
         pool = mp.Pool(10)
 
         print("\nEvaluate each FL round in parallel")
@@ -679,21 +682,14 @@ class SecSVGroupTesting(SecSV):
 
 
 if __name__ == '__main__':
-    clients = Clients()
-    clients.dirs = "data/mnist_cnn1/dir0.5/0/"
-    # clients.dirs = "data/cifar_cnn2/dir0.5/0/"
+    clients = Clients("mrna_rnn/dirt0.5sr0.1/0/")
     clients.load("clients.data")
 
-    # sveval = SecSV(clients, Sec_CNN2_CIFAR())
-    sveval = SecSV(clients, Sec_CNN1_MNIST())
+    sveval = SecSV(clients, Sec_mRNA_RNN())
     # sveval = SecSVPerm(clients, Sec_Logi_MNIST(), 0.25, 0.1)
     sveval.skip = False
-    # sveval.input_shape = (-1, 3, 32, 32)
-    # sveval.batch_size = 64
+    sveval.debug = True
     sveval.sv_eval_mul_rnds_rparallel()
-    # # sveval.dirs = clients.dirs
-    # sveval.save_stat("secsv_perm.json", skip=False)
-    # sveval.save_stat("secsv_perm_skip.json", skip=True)
 
     # sveval = SecSVGroupTesting(clients, Sec_Logi_MNIST(), 0.25, 0.1)
     # # sveval.skip = False

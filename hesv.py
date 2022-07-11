@@ -22,6 +22,7 @@ import pandas as pd
 import torch.multiprocessing as mp
 import random128
 
+
 try:
      mp.set_start_method('spawn')
 except RuntimeError:
@@ -38,7 +39,7 @@ class HESV:
         self.init_accs = {}
         self.ssv_dict = {}
         self.msv_dict = {}
-        self.dirs = "data/"
+        self.dirs = clients.data_dirs
         self.test_size = len(self.test_data)
         self.time_dict = {}
         self.init_time_dict()
@@ -47,6 +48,7 @@ class HESV:
         self.encrypted_data_list = []
         self.poly_modulus_degree = 2 ** 13
         self.n_slots = self.poly_modulus_degree // 2
+        self.debug = False
 
     def init_context(self):
         print("\nGenerate and distribute HE keys")
@@ -130,14 +132,17 @@ class HESV:
         # sec_model.input_nb = encrypted_data_list[0][2]
         sec_model.init_model_paras(context, model_paras)
 
-        pbar = tqdm(encrypted_data_list, mininterval=60)
-        # pbar = tqdm(encrypted_data_list)
-        # pbar = encrypted_data_list
+        if self.debug:
+            pbar = tqdm(encrypted_data_list)
+        else:
+            pbar = tqdm(encrypted_data_list, mininterval=60)
+
         for (enc_features, enc_truth, size) in pbar:
             sec_model.truth_nb = size
             incr_correct_nb = sec_model(enc_features, enc_truth)
-            # print(incr_correct_nb / size)
             correct_nb += incr_correct_nb
+            if self.debug:
+                print(incr_correct_nb / size)
 
         sec_model.clear_model_paras()
         return correct_nb
@@ -145,17 +150,17 @@ class HESV:
     def eval_init_model(self):
         print("\nEvaluate the initial model")
         self.recover_serialized_objects()
-        init_model = torch.load(self.clients.init_model)
+
+        if self.debug:
+            init_model = self.clients.get_global_model(self.T-1)
+        else:
+            init_model = self.clients.get_init_model()
+
         model_paras = init_model.state_dict()
         correct_nb = self.eval(model_paras)
         self.init_accs[0] = correct_nb / self.test_size
-        # self.init_accs[0] = 0.1
-
-        # model = torch.load("model/cifar_cnn2/dir0.5/0/rnd9/global.pkl")
-        # model = torch.load("model/mnist_cnn1/dir0.5/0/rnd9/global.pkl")
-        # model_paras = model.state_dict()
-        # correct_nb = self.eval(model_paras)
-        # print(correct_nb / self.test_size)
+        if self.debug:
+            print(self.init_accs[0])
 
     def recover_features(self, enc_feature_bytes):
         if type(enc_feature_bytes) == list:
@@ -188,7 +193,7 @@ class HESV:
 
         for client in tqdm(sel_clients.values()):
             subset = frozenset((client.id,))
-            local_model = torch.load(client.models[rnd])
+            local_model = client.get_model(rnd)
             model_paras = local_model.state_dict()
             correct_nb = self.eval(model_paras)
             acc_dict[subset] = correct_nb / self.test_size
@@ -271,16 +276,10 @@ class HESV:
 
 
 if __name__ == '__main__':
-    clients = Clients()
-    # clients.dirs = "data/cifar_cnn2/dir0.5/0/"
-    clients.dirs = "data/mnist_cnn1/dir0.5/0/"
+    clients = Clients("bank_logi/dirt0.5sr0.1/0/")
     clients.load("clients.data")
 
-    # sveval = HESV(clients, HE_CNN2_CIFAR())
-    sveval = HESV(clients, HE_CNN1_MNIST())
-    print(type(sveval) == HESV)
-    # sveval.input_shape = (-1, 3, 32, 32)
-    # sveval.batch_size = 34
-    sveval.batch_size = 64
+    sveval = HESV(clients, HE_BANK_Logi())
+    sveval.debug = True
     sveval.sv_eval_mul_rnds_rparallel()
     # sveval.save_stat("cnn1_mnist_iid_he.json")

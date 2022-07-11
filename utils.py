@@ -9,12 +9,17 @@ import copy
 import math
 import os
 
-def make_dir(dir):
-    if not os.path.exists(dir):
-        os.makedirs(dir)
-    return dir
+def set_random_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
 
-    
+def make_dirs(dirs):
+    if not os.path.exists(dirs):
+        os.makedirs(dirs)
+
 class H5Dataset(Dataset):
     """Dataset wrapping data and target tensors.
 
