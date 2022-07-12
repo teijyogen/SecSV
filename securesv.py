@@ -122,8 +122,8 @@ class SecSV:
         all_truth_share2 = np.concatenate(truth_share2_list, axis=0)
         self.test_data_shares = (all_feature_share1, all_feature_share2, all_truth_share1, all_truth_share2)
 
-    def shares_loader(self, indices="all"):
-        if indices == "all":
+    def shares_loader(self, indices=None):
+        if indices is None:
             indices = np.arange(0, self.test_size)
             batch_size = self.batch_size
         else:
@@ -275,7 +275,7 @@ class SecSV:
         if self.debug:
             pbar = tqdm(self.processed_shares)
         else:
-            pbar = tqdm(self.processed_shares, mininterval=60)
+            pbar = self.processed_shares
 
         for x_shares, truth_shares, idxs in pbar:
             sec_model.truth_nb = idxs.shape[0]

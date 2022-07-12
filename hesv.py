@@ -135,7 +135,7 @@ class HESV:
         if self.debug:
             pbar = tqdm(encrypted_data_list)
         else:
-            pbar = tqdm(encrypted_data_list, mininterval=60)
+            pbar = encrypted_data_list
 
         for (enc_features, enc_truth, size) in pbar:
             sec_model.truth_nb = size
@@ -276,10 +276,10 @@ class HESV:
 
 
 if __name__ == '__main__':
-    clients = Clients("mrna_rnn/dirt0.5sr0.1/0/")
+    clients = Clients("agnews_logi/dirt0.5sr0.2/0/")
     clients.load("clients.data")
 
-    sveval = HESV(clients, HE_mRNA_RNN())
+    sveval = HESV(clients, HE_AGNEWS_Logi())
     sveval.debug = True
     sveval.sv_eval_mul_rnds_rparallel()
     # sveval.save_stat("cnn1_mnist_iid_he.json")

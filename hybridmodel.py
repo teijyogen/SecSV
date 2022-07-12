@@ -192,9 +192,9 @@ class HybridModel(EncModel):
                     plain_feature = self.plaintext(feature)
                     plain_features.append(plain_feature)
 
-            plain_features_ic.append(enc_features)
+            plain_features_ic.append(plain_features)
 
-        plain_features_ic = np.array(enc_features_ic)
+        plain_features_ic = np.array(plain_features_ic)
 
         return plain_features_ic.tolist()
 
