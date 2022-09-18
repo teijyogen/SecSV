@@ -49,6 +49,7 @@ class HESV:
         self.poly_modulus_degree = 2 ** 13
         self.n_slots = self.poly_modulus_degree // 2
         self.debug = False
+        self.n_processes = hemodel.n_processes
 
     def init_context(self):
         print("\nGenerate and distribute HE keys")
@@ -173,7 +174,7 @@ class HESV:
 
 
     def recover_serialized_objects(self):
-        self.context = ts.Context.load(self.context_bytes, self.poly_modulus_degree)
+        self.context = ts.Context.load(self.context_bytes)
 
         for (enc_features_bytes, enc_truth_bytes, size) in self.encrypted_data_bytes_list:
             enc_features = self.recover_features(enc_features_bytes)
@@ -232,7 +233,7 @@ class HESV:
         self.encrypted_data_list = []
         manager = mp.Manager()
         rnds_acc_dict = manager.dict()
-        pool = mp.Pool(10)
+        pool = mp.Pool(self.n_processes)
 
         workers = []
         for rnd in range(0, self.T):
@@ -276,10 +277,10 @@ class HESV:
 
 
 if __name__ == '__main__':
-    clients = Clients("agnews_logi/dirt0.5sr0.2/0/")
+    clients = Clients("mrna_rnn/dirt0.5sr0.2/0/")
     clients.load("clients.data")
 
-    sveval = HESV(clients, HE_AGNEWS_Logi())
+    sveval = HESV(clients, HE_mRNA_RNN())
     sveval.debug = True
     sveval.sv_eval_mul_rnds_rparallel()
-    # sveval.save_stat("cnn1_mnist_iid_he.json")
+    # sveval.save_stat("hesv_.json")
