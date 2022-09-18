@@ -8,6 +8,7 @@ import random
 import copy
 import math
 import os
+import matplotlib.pyplot as plt
 
 def set_random_seed(seed):
     torch.manual_seed(seed)
@@ -100,6 +101,58 @@ def get_diagonal(matrix, position):
             break
 
     return diagonal
+
+LEGEND_FONT = {'family': 'Times New Roman',
+         'weight': 'normal',
+         'size': 10,
+         }
+
+LABEL_FONT = {'family': 'Times New Roman',
+         'weight': 'black',
+         'size': 24,
+         }
+
+TITLE_FONT = {'family': 'Times New Roman',
+         'weight': 'black',
+         'size': 18,
+         }
+
+def plot(x_list, y_list, labels, title, file_name, xlabel, ylabel, yscale='linear', xscale="linear"):
+    market_color_ls = [
+        ('v', 'b', 'solid', 0, 'b'),
+        ('h', 'g', 'solid', 1, 'g'),
+        ('d', 'm', 'solid', 2, 'm'),
+        ('^', 'r', 'solid', 3, 'r'),
+        ('o', 'c', 'solid', 4, 'c'),
+        ('s', 'k', 'solid', 5, 'k'),
+        ('*', 'y', 'solid', 6, 'y'),
+        ('X', 'olive', 'solid', 7, 'olive')
+    ]
+
+    if xscale == "log":
+        fig, ax = plt.subplots()
+        ax.set_xscale('log', base=2)
+        ax.set_yscale(yscale)
+        for i in range(len(x_list)):
+            ax.plot(x_list[i], y_list[i], label=labels[i], marker=market_color_ls[i][0], color=market_color_ls[i][1], alpha=1.0)
+    else:
+        for i in range(len(x_list)):
+            plt.plot(x_list[i], y_list[i], label=labels[i], marker=market_color_ls[i][0], color=market_color_ls[i][1],
+                     linestyle=market_color_ls[i][2], zorder=market_color_ls[i][3], markerfacecolor=market_color_ls[i][4])
+
+
+    plt.yscale(yscale)
+    plt.tick_params(labelsize=8)
+    plt.legend(prop=LEGEND_FONT)
+    plt.xlabel(xlabel, LABEL_FONT)
+    plt.ylabel(ylabel, LABEL_FONT)
+    plt.title(title, TITLE_FONT)
+    plt.rcParams['savefig.dpi'] = 400
+    plt.rcParams['figure.dpi'] = 400
+    plt.savefig(file_name, bbox_inches='tight')
+    plt.show()
+    plt.close()
+
 
 if __name__ == '__main__':
 

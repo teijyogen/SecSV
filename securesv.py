@@ -62,6 +62,7 @@ class SecSV:
         self.batch_size = self.hybridmodel.cal_optimal_batch_size(self.test_size)
         self.input_nb = None
         self.debug = False
+        self.n_processes = hybridmodel.n_processes
 
     def init_time_dict(self):
         self.time_dict["total"] = 0.0
@@ -425,7 +426,7 @@ class SecSV:
         self.all_processed_shares = []
         self.processed_shares = []
         manager = mp.Manager()
-        pool = mp.Pool(10)
+        pool = mp.Pool(self.n_processes)
 
         print("\nEvaluate each FL round in parallel")
 
@@ -527,7 +528,7 @@ class SecSVPerm(SecSV):
         self.processed_shares = []
         manager = mp.Manager()
         perms_dict = manager.dict()
-        pool = mp.Pool(10)
+        pool = mp.Pool(self.n_processes)
 
         print("\nEvaluate each FL round in parallel")
 
@@ -662,7 +663,7 @@ class SecSVGroupTesting(SecSV):
         manager = mp.Manager()
         beta_mat_dict = manager.dict()
         model_subsets_ls_dict = manager.dict()
-        pool = mp.Pool(10)
+        pool = mp.Pool(self.n_processes)
 
         print("\nEvaluate each FL round in parallel")
 
@@ -682,10 +683,10 @@ class SecSVGroupTesting(SecSV):
 
 
 if __name__ == '__main__':
-    clients = Clients("agnews_logi/dirt0.5sr1.0/0/")
+    clients = Clients("mrna_rnn/dirt0.5sr0.2/0/")
     clients.load("clients.data")
 
-    sveval = SecSV(clients, Sec_AGNEWS_Logi())
+    sveval = SecSV(clients, Sec_mRNA_RNN())
     # sveval = SecSVPerm(clients, Sec_Logi_MNIST(), 0.25, 0.1)
     sveval.skip = True
     sveval.debug = True
