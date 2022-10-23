@@ -43,8 +43,6 @@ class HESV:
         self.test_size = len(self.test_data)
         self.time_dict = {}
         self.init_time_dict()
-        self.context = None
-        self.context_bytes = None
         self.encrypted_data_list = []
         self.poly_modulus_degree = 2 ** 13
         self.n_slots = self.poly_modulus_degree // 2
@@ -62,13 +60,11 @@ class HESV:
         context.global_scale = pow(2, PREC)
         context.generate_galois_keys()
 
-        context_bytes_sk = context.serialize(save_secret_key=True)
-        context_bytes = context.serialize(save_secret_key=False)
+        context_bytes_sk = share_context(context, name="context_sk", save_secret_key=True)
+        context_bytes = share_context(context, name="context", save_secret_key=False)
 
         self.time_dict["communication"] += communicate(context_bytes_sk) * (self.clients.size - 1) + communicate(context_bytes)
 
-        self.context = context
-        self.context_bytes = context_bytes_sk
         self.hemodel.n_slots = self.n_slots
 
     def init_time_dict(self):
@@ -82,7 +78,7 @@ class HESV:
 
     def encrypt_data(self):
         print("\nEncrypt test data")
-        self.hemodel.context = self.context
+        self.hemodel.context = get_shared_context("context")
 
         self.encrypted_data_bytes_list = []
         for id in self.clients.data.keys():
@@ -90,14 +86,22 @@ class HESV:
             data_loader = torch.utils.data.DataLoader(test_data, batch_size=self.batch_size, shuffle=False)
             self.hemodel.input_nb = self.batch_size
 
+            batch_id = 0
             for (data, target) in data_loader:
                 data = data.numpy().reshape(self.input_shape)
                 size = data.shape[0]
                 data = np.pad(data.reshape(size, -1), ((0, self.batch_size-size), (0, 0))).reshape(self.batch_size, -1)
                 enc_features_bytes = self.hemodel.encrypt_input(data)
                 enc_truth_bytes = self.hemodel.encrypt_truth(target)
+                shm_name_features = f"{id}_{batch_id}_features"
+                shm_name_truth = f"{id}_{batch_id}_truth"
+                shape_features = share_data(enc_features_bytes, shm_name_features)
+                shape_truth = share_data(enc_truth_bytes, shm_name_truth)
+                # shape_features = (10, 1, 1, 32)
+                # shape_truth = None
 
-                self.encrypted_data_bytes_list.append((enc_features_bytes, enc_truth_bytes, size))
+                self.encrypted_data_bytes_list.append(((shm_name_features, shape_features), (shm_name_truth, shape_truth), size))
+                batch_id += 1
 
         self.encrypted_data_bytes_list.sort(key=lambda x: x[2], reverse=True)
         self.hemodel.context = None
@@ -123,15 +127,9 @@ class HESV:
 
         f.close()
 
-    def eval(self, model_paras):
-        context = self.context
-        model_paras = model_paras
-        # encrypted_data_list = self.encrypted_data_list
+    def eval(self, model):
         encrypted_data_list = self.encrypted_data_list
         correct_nb = 0
-        sec_model = self.hemodel
-        # sec_model.input_nb = encrypted_data_list[0][2]
-        sec_model.init_model_paras(context, model_paras)
 
         if self.debug:
             pbar = tqdm(encrypted_data_list)
@@ -139,13 +137,12 @@ class HESV:
             pbar = encrypted_data_list
 
         for (enc_features, enc_truth, size) in pbar:
-            sec_model.truth_nb = size
-            incr_correct_nb = sec_model(enc_features, enc_truth)
+            model.truth_nb = size
+            incr_correct_nb = model(enc_features, enc_truth)
             correct_nb += incr_correct_nb
             if self.debug:
                 print(incr_correct_nb / size)
 
-        sec_model.clear_model_paras()
         return correct_nb
 
     def eval_init_model(self):
@@ -157,59 +154,70 @@ class HESV:
         else:
             init_model = self.clients.get_init_model()
 
-        model_paras = init_model.state_dict()
-        correct_nb = self.eval(model_paras)
+        model_param = init_model.state_dict()
+        enc_model = copy.deepcopy(self.hemodel)
+        enc_model.init_context()
+        enc_model.init_model_param(model_param)
+        correct_nb = self.eval(enc_model)
+
         self.init_accs[0] = correct_nb / self.test_size
         if self.debug:
             print(self.init_accs[0])
 
-    def recover_features(self, enc_feature_bytes):
-        if type(enc_feature_bytes) == list:
-            enc_features = []
-            for enc_feature_byte in enc_feature_bytes:
-                enc_features.append(self.recover_features(enc_feature_byte))
-            return enc_features
-        else:
-            return ts.CKKSVector.load(self.context, enc_feature_bytes)
-
+        del enc_model
 
     def recover_serialized_objects(self):
-        self.context = ts.Context.load(self.context_bytes)
+        context = get_shared_context("context")
 
-        for (enc_features_bytes, enc_truth_bytes, size) in self.encrypted_data_bytes_list:
-            enc_features = self.recover_features(enc_features_bytes)
-            enc_truth = ts.CKKSVector.load(self.context, enc_truth_bytes)
+        for (features, truth, size) in self.encrypted_data_bytes_list:
+            enc_features = get_shared_data(features[0], context, features[1])
+            enc_truth = get_shared_data(truth[0], context, truth[1])
             self.encrypted_data_list.append((enc_features, enc_truth, size))
+
+    def clear_shared_memory(self):
+        unlink_shared_data("context")
+        unlink_shared_data("context_sk")
+
+        for (features, truth, size) in self.encrypted_data_bytes_list:
+            unlink_shared_data(features[0])
+            unlink_shared_data(truth[0])
+
 
     def sv_eval_one_rnd_rparallel(self, rnd, rnds_acc_dict):
         self.recover_serialized_objects()
         self.init_time_dict()
+        self.hemodel.init_context()
 
         start = time.process_time()
         clients = self.clients
         acc_dict = {}
         sel_clients = clients.selected_clients(rnd)
         all_subsets = make_all_subsets(list(sel_clients.keys()))
+        model_dict = {}
 
 
         for client in tqdm(sel_clients.values()):
             subset = frozenset((client.id,))
             local_model = client.get_model(rnd)
-            model_paras = local_model.state_dict()
-            correct_nb = self.eval(model_paras)
+            model_param = local_model.state_dict()
+
+            enc_model = copy.deepcopy(self.hemodel)
+            enc_model.init_model_param(model_param)
+            correct_nb = self.eval(enc_model)
             acc_dict[subset] = correct_nb / self.test_size
 
+            size = client.train_size
+            model_dict[client.id] = (enc_model.enc_param, size)
 
         for subset in tqdm(all_subsets):
             if len(subset) < 2:
                 continue
 
-            model_ls = clients.get_model_list(list(subset), rnd)
-            size_ls = clients.get_train_size_list(list(subset), rnd)
+            enc_model = copy.deepcopy(self.hemodel)
+            param_size_pairs = [model_dict[cid] for cid in list(subset)]
+            enc_model.aggregate(param_size_pairs)
 
-            aggr_model = FL.fedavg(model_ls, size_ls)
-            model_paras = aggr_model.state_dict()
-            correct_nb = self.eval(model_paras)
+            correct_nb = self.eval(enc_model)
             acc_dict[subset] = correct_nb / self.test_size
 
         rnds_acc_dict[rnd] = acc_dict
@@ -229,7 +237,6 @@ class HESV:
 
         print("\nEvaluate each FL round in parallel")
 
-        self.context = None
         self.encrypted_data_list = []
         manager = mp.Manager()
         rnds_acc_dict = manager.dict()
@@ -274,13 +281,15 @@ class HESV:
         print(self.ssv_dict)
         print(self.msv_dict)
 
+        self.clear_shared_memory()
+
 
 
 if __name__ == '__main__':
-    clients = Clients("mrna_rnn/dirt0.5sr0.2/0/")
+    clients = Clients("bank_logi/dirt0.5sr1.0/0/")
     clients.load("clients.data")
 
-    sveval = HESV(clients, HE_mRNA_RNN())
-    sveval.debug = True
+    sveval = HESV(clients, HE_BANK_Logi())
+    # sveval.debug = True
     sveval.sv_eval_mul_rnds_rparallel()
-    # sveval.save_stat("hesv_.json")
+    # sveval.save_stat("hesv_221021.json")

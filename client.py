@@ -180,17 +180,21 @@ class Clients:
         ids = self.selected_ids(rnd)
         return self.find_clients(ids)
 
+    def get_model(self, cid, rnd):
+        model = self.data[cid].get_model(rnd)
+        return model
+
     def get_model_list(self, ids, rnd):
         model_ls = []
-        for id in ids:
-            model = self.data[id].get_model(rnd)
+        for cid in ids:
+            model = self.get_model(cid, rnd)
             model_ls.append(model)
         return model_ls
 
-    def get_train_size_list(self, ids, rnd):
+    def get_train_size_list(self, ids):
         size_list = []
-        for id in ids:
-            size_list.append(self.data[id].train_size)
+        for cid in ids:
+            size_list.append(self.data[cid].train_size)
 
         return size_list
 

@@ -9,6 +9,60 @@ import copy
 import math
 import os
 import matplotlib.pyplot as plt
+from multiprocessing import shared_memory
+
+def share_data(data, name):
+    unlink_shared_data(name)
+
+    if type(data) != list:
+        data = [data]
+        shape = None
+    else:
+        data = np.array(data)
+        shape = data.shape
+        data = data.reshape(-1).tolist()
+    shm_list = shared_memory.ShareableList(data, name=name)
+    shm = shm_list.shm
+    shm.close()
+
+    return shape
+
+def get_shared_data(name, context, shape=None):
+    shm_list = shared_memory.ShareableList(name=name)
+    if len(shm_list) == 1:
+        data = shm_list[0]
+        data = ts.CKKSVector.load(context, data)
+    else:
+        data = [ts.CKKSVector.load(context, entry) for entry in shm_list]
+
+    if shape is not None:
+        data = np.array(data).reshape(shape).tolist()
+
+    shm_list.shm.close()
+
+    return data
+
+def share_context(context, name="context", save_secret_key=True):
+    unlink_shared_data(name)
+    context_bytes = context.serialize(save_secret_key=save_secret_key)
+    shm = shared_memory.SharedMemory(create=True, size=len(context_bytes), name=name)
+    shm.buf[:] = context_bytes
+    shm.close()
+
+    return context_bytes
+
+def get_shared_context(name="context"):
+    shm = shared_memory.SharedMemory(name=name)
+    context = ts.Context.load(bytes(shm.buf))
+    return context
+
+def unlink_shared_data(name):
+    try:
+        shm = shared_memory.SharedMemory(name)
+        shm.close()
+        shm.unlink()
+    except:
+        return
 
 def set_random_seed(seed):
     torch.manual_seed(seed)
