@@ -8,8 +8,8 @@ import random
 import copy
 import math
 import os
-import matplotlib.pyplot as plt
 from multiprocessing import shared_memory
+
 
 def share_data(data, name):
     unlink_shared_data(name)
@@ -71,9 +71,9 @@ def set_random_seed(seed):
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
 
-def make_dirs(dirs):
-    if not os.path.exists(dirs):
-        os.makedirs(dirs)
+def make_dir(file_dir):
+    if not os.path.exists(file_dir):
+        os.makedirs(file_dir)
 
 class H5Dataset(Dataset):
     """Dataset wrapping data and target tensors.
@@ -98,12 +98,14 @@ class H5Dataset(Dataset):
     def __len__(self):
         return self.data_tensor.shape[0]
 
-def communicate(object, speed=1073741824):
-    size = sys.getsizeof(object) * 8
+def communicate(data, speed=134217728):
+    if type(data) == np.ndarray:
+        size = data.nbytes
+    else:
+        size = sys.getsizeof(data)
     time = size / speed
 
     return time
-
 
 def sigma(matrix):
     perm_mat = copy.deepcopy(matrix)
@@ -155,110 +157,6 @@ def get_diagonal(matrix, position):
             break
 
     return diagonal
-
-LEGEND_FONT = {'family': 'Times New Roman',
-         'weight': 'normal',
-         'size': 10,
-         }
-
-LABEL_FONT = {'family': 'Times New Roman',
-         'weight': 'black',
-         'size': 24,
-         }
-
-TITLE_FONT = {'family': 'Times New Roman',
-         'weight': 'black',
-         'size': 18,
-         }
-
-def plot(x_list, y_list, labels, title, file_name, xlabel, ylabel, yscale='linear', xscale="linear"):
-    market_color_ls = [
-        ('v', 'b', 'solid', 0, 'b'),
-        ('h', 'g', 'solid', 1, 'g'),
-        ('d', 'm', 'solid', 2, 'm'),
-        ('^', 'r', 'solid', 3, 'r'),
-        ('o', 'c', 'solid', 4, 'c'),
-        ('s', 'k', 'solid', 5, 'k'),
-        ('*', 'y', 'solid', 6, 'y'),
-        ('X', 'olive', 'solid', 7, 'olive')
-    ]
-
-    if xscale == "log":
-        fig, ax = plt.subplots()
-        ax.set_xscale('log', base=2)
-        ax.set_yscale(yscale)
-        for i in range(len(x_list)):
-            ax.plot(x_list[i], y_list[i], label=labels[i], marker=market_color_ls[i][0], color=market_color_ls[i][1], alpha=1.0)
-    else:
-        for i in range(len(x_list)):
-            plt.plot(x_list[i], y_list[i], label=labels[i], marker=market_color_ls[i][0], color=market_color_ls[i][1],
-                     linestyle=market_color_ls[i][2], zorder=market_color_ls[i][3], markerfacecolor=market_color_ls[i][4])
-
-
-    plt.yscale(yscale)
-    plt.tick_params(labelsize=8)
-    plt.legend(prop=LEGEND_FONT)
-    plt.xlabel(xlabel, LABEL_FONT)
-    plt.ylabel(ylabel, LABEL_FONT)
-    plt.title(title, TITLE_FONT)
-    plt.rcParams['savefig.dpi'] = 400
-    plt.rcParams['figure.dpi'] = 400
-    plt.savefig(file_name, bbox_inches='tight')
-    plt.show()
-    plt.close()
-
-
-if __name__ == '__main__':
-
-    y = np.array([0, -4000, 10, 20])
-
-    y = 1 / (1 + np.exp(-y))
-
-    print(y)
-    # matrix = np.array([i + 1 for i in range(7840)]).reshape(10, 784)
-    # vec = np.random.randn(5, 784).T.reshape(-1)
-    # print(communicate(vec) * 14)
-    #
-    # start = time.process_time()
-    # for i in range(14):
-    #     rotated = np.roll(vec, -i * 784)
-    # print(time.process_time() - start)
-    #
-    # print(matrix @ vec.T)
-    #
-    # chunk_size = matrix.shape[0]
-    # size = matrix.shape[1]
-    # chunk_nb = int(size / chunk_size)
-    # batch_size = vec.shape[0]
-    #
-    # vec = vec.T.reshape(-1)
-    #
-    # results = []
-    # for i in range(chunk_size):
-    #     diagonal = np.tile(get_diagonal(matrix, i).reshape(-1, 1), (1, batch_size)).reshape(-1)
-    #     # print(diagonal)
-    #     rotated = np.roll(vec, -i * batch_size)
-    #     # print(rotated)
-    #     results.append(diagonal * rotated)
-    #
-    # for i in range(chunk_size * chunk_nb, size):
-    #     diagonal = np.tile(get_diagonal(matrix, i).reshape(-1, 1), (1, batch_size)).reshape(-1)
-    #     rotated = np.roll(vec, -i * batch_size)
-    #     # print(rotated)
-    #     results.append(diagonal * rotated)
-    #
-    # result = np.sum(results, axis=0)
-    # copy = copy.deepcopy(result)
-    #
-    # double_times = int(math.log(size / chunk_size, 2))
-    # for k in range(double_times):
-    #     result = result + np.roll(result, -chunk_size * batch_size * 2 ** k)
-    #
-    # for j in range(2 ** double_times, int(size / chunk_size)):
-    #     result += np.roll(copy, -j * chunk_size * batch_size)
-    #
-    # print(result.reshape(-1, batch_size)[:chunk_size, :])
-
 
 
 

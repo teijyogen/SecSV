@@ -165,11 +165,3 @@ class CKKSTensor(AbstractTensor):
         "Tries to transpose the tensor"
         self.data.transpose_()
         return self
-
-    # def rotate_rows(self, steps) -> "CKKSTensor":
-    #     result = self.data.rotate_rows(steps, self.context().data.galois_keys())
-    #     return self._wrap(result)
-    #
-    # def rotate_columns(self) -> "CKKSTensor":
-    #     result = self.data.rotate_columns(self.context().data.galois_keys())
-    #     return self._wrap(result)

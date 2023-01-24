@@ -1,4 +1,5 @@
-from setuptools import setup
+from distutils.core import setup
+# from setuptools import setup
 from Cython.Build import cythonize
 from numpy import get_include
 

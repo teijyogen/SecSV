@@ -29,7 +29,7 @@ public:
         for (unsigned int i=0; i < size; ++i){
             arr[i] = ui(R).convert_to<result_type>();
         }
-//        return arr;
+        return *arr;
     }
 
 private:

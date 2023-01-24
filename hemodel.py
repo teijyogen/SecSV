@@ -1,6 +1,4 @@
 import torch
-from torchvision import datasets
-import torchvision.transforms as transforms
 import tenseal as ts
 import math
 import numpy as np
@@ -16,7 +14,7 @@ from collections import Counter
 import random128
 import skimage.measure
 import gc
-from collections import Iterable
+from collections.abc import Iterable
 
 class EncModel:
     def __init__(self):
@@ -25,6 +23,7 @@ class EncModel:
         self.time_dict = {}
         self.enc_param = {}
         self.aggregated = False
+        self.server_nb = 1
 
     def init_context(self):
         self.context = get_shared_context("context")
@@ -34,11 +33,49 @@ class EncModel:
         self.context = None
         self.context_sk = None
 
+    def calc_size(self, enc_vec):
+        if type(enc_vec) == list:
+            size = 0
+            for ele in enc_vec:
+                size += ele.size()
+        else:
+            size = enc_vec.size()
+        return size
+
     def encrypt_(self, vector):
         start = time.process_time()
         enc_vec = ts.ckks_vector(self.context, vector.reshape(-1))
         self.time_dict["encryption"] += time.process_time() - start
         return enc_vec
+
+    def encrypt(self, mat):
+        enc_vec = self.encrypt_(mat)
+        return enc_vec
+
+    def send_enc_vector_(self, enc_vec, return_bytes=False, recevier_nb=1):
+        enc_vec_bytes = enc_vec.serialize()
+        self.time_dict["communication"] += communicate(enc_vec_bytes) * recevier_nb
+        if return_bytes:
+            return enc_vec_bytes
+        else:
+            enc_vec = ts.CKKSVector.load(self.context, enc_vec_bytes)
+            return enc_vec
+
+    def send_enc_vector(self, enc_vec, return_bytes=False, recevier_nb=1):
+        if type(enc_vec) == list:
+            enc_vec_ls = []
+            for ele in enc_vec:
+                new_ele = self.send_enc_vector_(ele, return_bytes=return_bytes, recevier_nb=recevier_nb)
+                enc_vec_ls.append(new_ele)
+            return enc_vec_ls
+        else:
+            enc_vec = self.send_enc_vector_(enc_vec, return_bytes=return_bytes, recevier_nb=recevier_nb)
+            return enc_vec
+
+    def encrypt_and_send(self, mat, return_bytes=False, recevier_nb=1):
+        enc_mat = self.encrypt(mat)
+        enc_mat = self.send_enc_vector(enc_mat, return_bytes=return_bytes, recevier_nb=recevier_nb)
+        return enc_mat
 
     def decrypt_(self, enc_vec):
         start = time.process_time()
@@ -58,26 +95,6 @@ class EncModel:
 
     def plaintext_(self, mat):
         return ts.plain_tensor(mat.reshape(-1), dtype='float')
-
-    def send_enc_vector_(self, enc_vec, return_bytes=False, nb_receviers=1):
-        enc_vec_bytes = enc_vec.serialize()
-        self.time_dict["communication"] += communicate(enc_vec_bytes) * nb_receviers
-        if return_bytes:
-            return enc_vec_bytes
-        else:
-            enc_vec = ts.CKKSVector.load(self.context, enc_vec_bytes)
-            return enc_vec
-
-    def send_enc_vector(self, enc_vec, return_bytes=False, nb_receviers=1):
-        if type(enc_vec) == list:
-            enc_vec_ls = []
-            for ele in enc_vec:
-                new_ele = self.send_enc_vector_(ele, return_bytes=return_bytes, nb_receviers=nb_receviers)
-                enc_vec_ls.append(new_ele)
-            return enc_vec_ls
-        else:
-            enc_vec = self.send_enc_vector_(enc_vec, return_bytes=return_bytes, nb_receviers=nb_receviers)
-            return enc_vec
 
     def relu(self, vec):
         start = time.process_time()
@@ -109,26 +126,72 @@ class EncModel:
         self.time_dict["activation"] += time.process_time() - start
         return res
 
+    def argmax(self, vec):
+        start = time.process_time()
+        res = np.argmax(vec, axis=0)
+        self.time_dict["activation"] += time.process_time() - start
+        return res
+
     def add(self, mat1, mat2):
-        if isinstance(mat1, Iterable) and isinstance(mat2, Iterable):
+        if isinstance(mat1, (list, tuple)) and isinstance(mat2, (list, tuple)):
             enc_y = []
             for i in range(len(mat1)):
                 enc_y.append(self.add(mat1[i], mat2[i]))
-        elif not isinstance(mat1, Iterable) and not isinstance(mat2, Iterable):
+        elif not isinstance(mat1, (list, tuple)) and not isinstance(mat2, (list, tuple)):
             enc_y = mat1 + mat2
         else:
-            raise TypeError("Add not supported between Iterable and Non-Iterable ")
+            raise TypeError("Add not supported for the data types")
+
+        return enc_y
+
+    def subtract(self, mat1, mat2):
+        if type(mat1) == list and type(mat2) == list:
+            if len(mat1) != len(mat2):
+                raise ValueError("Matrix numbers do not match")
+            enc_y = []
+            for i in range(len(mat1)):
+                enc_y.append(self.subtract(mat1[i], mat2[i]))
+        elif type(mat1) != list and type(mat2) != list:
+            enc_y = mat1 - mat2
+        else:
+            raise TypeError("Subtract not supported between list and tensor ")
+
+        return enc_y
+
+    def entrywise_mul(self, mat1, mat2):
+        if type(mat1) == list and type(mat2) == list:
+            if len(mat1) != len(mat2):
+                raise ValueError("Matrix numbers do not match")
+            enc_y = []
+            for i in range(len(mat1)):
+                enc_y.append(self.entrywise_mul(mat1[i], mat2[i]))
+        elif type(mat1) != list and type(mat2) != list:
+            enc_y = mat1 * mat2
+        else:
+            raise TypeError("Dotmul not supported between list and tensor ")
 
         return enc_y
 
     def constant_mul(self, mat, constant):
-        if isinstance(mat, Iterable):
+        if isinstance(mat, (list, tuple)):
             enc_y = []
             for submat in mat:
                 new_submat = self.constant_mul(submat, constant)
                 enc_y.append(new_submat)
         else:
             enc_y = mat * constant
+        return enc_y
+
+    def mul_and_sum_mat_pairs(self, mat1, mat2):
+        if len(mat1) != len(mat2):
+            raise ValueError("Matrix numbers do not match")
+
+        mat_nb = len(mat1)
+        enc_y = self.entrywise_mul(mat1[0], mat2[0])
+        for i in range(1, mat_nb):
+            result = self.entrywise_mul(mat1[i], mat2[i])
+            enc_y = self.add(enc_y, result)
+
         return enc_y
 
     def aggregate(self, param_size_pairs):
@@ -139,90 +202,54 @@ class EncModel:
         sizes = np.array(sizes)
         weights = sizes / sizes.sum()
 
+        self.enc_param = {}
         for key in keys:
+            start = time.process_time()
             aggr_param = self.constant_mul(params[0][key], weights[0])
             for i in range(1, len(params)):
                 weighted_param = self.constant_mul(params[i][key], weights[i])
                 aggr_param = self.add(aggr_param, weighted_param)
             self.enc_param[key] = aggr_param
-
+            self.time_dict["HE computation"] += time.process_time() - start
         self.aggregated = True
 
-    def clear_model_param(self):
-        for key in self.model_param.keys():
-            self.model_param[key] = None
-
-    def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
-
-class HEModel(EncModel):
-    def __init__(self):
-        super(HEModel, self).__init__()
-        self.n_slots = 4096
-        self.max_len = 64
-
-    def encrypt(self, mat):
-        enc_vec = self.encrypt_(mat)
-        return enc_vec
-
-    def encrypt_and_send(self, mat, return_bytes=False):
-        enc_mat = self.encrypt(mat)
-        enc_mat = self.send_enc_vector(enc_mat, return_bytes=return_bytes)
-        return enc_mat
-
-    def dotmul(self, mat1, mat2):
-        if type(mat1) == list and type(mat2) == list:
-            enc_y = mat1[0] * mat2[0]
-            for i in range(1, len(mat1)):
-                enc_y += mat1[i] * mat2[i]
-        elif type(mat1) != list and type(mat2) != list:
-            enc_y = mat1 * mat2
-        else:
-            raise TypeError("Dotmul not supported between list and tensor ")
-        return enc_y
-
-    def multiple_mat_dotmul(self, mat1_ls, mat2_ls):
-        return self.dotmul(mat1_ls, mat2_ls)
-
-    def encrypt_conv(self, conv_weight, conv_bias, kernel_len, conv_windows_nb):
+    def encrypt_conv(self, conv_weight, conv_bias, conv_windows_nb, return_bytes=False):
         conv_weight = conv_weight.numpy()
         conv_bias = conv_bias.numpy()
+
         repeated_times = conv_windows_nb * self.input_nb
-        enc_channels = []
+        conv_weight = np.expand_dims(conv_weight, axis=-1)
+        conv_weight = np.repeat(conv_weight, repeated_times, axis=-1)
+        conv_bias = conv_bias.reshape(-1, 1)
+        conv_bias = np.repeat(conv_bias, repeated_times, axis=-1)
+
+        enc_wt_oc, enc_bias_oc = [], []
         for weight, bias in zip(conv_weight, conv_bias):
-            enc_weights_ic = []
-            in_channels_nb = len(weight)
-            for ic in range(in_channels_nb):
-                ic_wt = weight[ic].reshape(-1)
+            enc_wt_ic = []
+            for ic in range(conv_weight.shape[1]):
+                ic_wt = weight[ic].reshape(-1, repeated_times)
                 enc_weights = []
-                # print(flat_wt.shape)
-                for i in range(kernel_len ** 2):
-                    rep_wt = ic_wt[i].repeat(repeated_times)
-                    enc_weight = self.encrypt(rep_wt)
-                    # enc_weight = self.encrypt(flat_wt[i].view(-1))
-                    enc_weight = self.send_enc_vector(enc_weight)
+                for wt in ic_wt:
+                    enc_weight = self.encrypt_and_send(wt, recevier_nb=self.server_nb, return_bytes=return_bytes)
                     enc_weights.append(enc_weight)
 
-                enc_weights_ic.append(enc_weights)
+                enc_wt_ic.append(enc_weights)
 
-            rep_bias = bias.reshape(-1).repeat(repeated_times)
-            enc_bias = self.encrypt(rep_bias)
-            # enc_bias = self.encrypt(bias.view(-1))
-            enc_bias = self.send_enc_vector(enc_bias)
-            enc_channels.append((enc_weights_ic, enc_bias))
+            enc_wt_oc.append(enc_wt_ic)
 
-        return enc_channels
+            enc_bias = self.encrypt_and_send(bias, recevier_nb=self.server_nb, return_bytes=return_bytes)
+            enc_bias_oc.append(enc_bias)
 
-    def preprocess_for_conv(self, x, windows_nb, kernel_len, stride, pad_width=((0, 0), (0, 0), (0, 0)), return_bypes=False):
+        return enc_wt_oc, enc_bias_oc
+
+    def preprocess_for_conv(self, x, windows_nb, kernel_len, stride, pad_width=((0, 0), (0, 0), (0, 0)), return_bypes=False, encryption=True):
 
         dk = int(windows_nb ** 0.5)
         padded_x = np.pad(x, pad_width)
 
-        enc_features_ic = []
-        in_channels_nb = padded_x.shape[0]
-        for ic in range(in_channels_nb):
-            x_ic = padded_x[ic]
-            enc_features = []
+        features_ic = []
+        for x_ic in padded_x:
+            features = []
             for i in range(kernel_len):
                 for j in range(kernel_len):
                     feature = np.zeros((dk, dk, self.input_nb))
@@ -231,22 +258,71 @@ class HEModel(EncModel):
                             feature[i_prime, j_prime, :] = x_ic[stride * i_prime + i, stride * j_prime + j, :].reshape(
                                 1, 1, self.input_nb)
 
-                    enc_feature = self.encrypt_and_send(feature, return_bytes=return_bypes)
-                    enc_features.append(enc_feature)
+                    if encryption:
+                        enc_feature = self.encrypt_and_send(feature, return_bytes=return_bypes)
+                        features.append(enc_feature)
+                    else:
+                        plain_feature = self.plaintext(feature)
+                        features.append(plain_feature)
 
-            enc_features_ic.append(enc_features)
+            features_ic.append(features)
 
-        return enc_features_ic
+        return features_ic
+
+    def encrypt_fc(self, weight, bias, add_cols=0, return_bytes=False):
+        pass
+
+    def encrypt_gru(self, gru_weights, gru_biases, add_cols_to_hidden=0, return_bytes=False):
+        hidden_size = int(gru_weights.shape[0] / 3)
+        enc_params = []
+        for i in range(3):
+            weight = gru_weights[i*hidden_size:(i+1)*hidden_size]
+            bias = gru_biases[i*hidden_size:(i+1)*hidden_size]
+            enc_param = self.encrypt_fc(weight, bias, add_cols=add_cols_to_hidden, return_bytes=return_bytes)
+            enc_params.append(enc_param)
+
+        return enc_params
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+class HEModel(EncModel):
+    def __init__(self):
+        super(HEModel, self).__init__()
+        self.n_slots = 2048
+        self.max_len = int(self.n_slots ** 0.5)
+
+    def set_n_slots(self, n_slots):
+        self.n_slots = n_slots
+        self.max_len = int(n_slots ** 0.5)
+
+    def shift_bycols(self, enc_vec, col_id, step=1):
+        n_rows = enc_vec.shape[0] // n_cols
+        mask = np.zeros(enc_vec.shape[0]).reshape(n_rows, n_cols)
+        mask[:, :1] = 1.0
+        mask = mask.reshape(-1)
+
+        temp = enc_vec * mask
+        res = enc_vec - temp
+
+        res.rotate_vector_inplace(step)
+        temp.rotate_vector_inplace(step-n_cols)
+
+        return res + temp
 
     def sec_conv(self, enc_conv, enc_features):
         enc_y_oc = []
-        for param in enc_conv:
-            enc_wt, enc_bias = param
+        enc_wt_oc, enc_bias_oc = enc_conv
+
+        for oc in range(len(enc_wt_oc)):
+            enc_wt_ic = enc_wt_oc[oc]
+            enc_bias = enc_bias_oc[oc]
+
             start = time.process_time()
-            enc_y = self.multiple_mat_dotmul(enc_wt[0], enc_features[0])
-            for ic in range(1, len(enc_wt)):
-                enc_y += self.multiple_mat_dotmul(enc_wt[ic], enc_features[ic])
-            enc_y += enc_bias
+            enc_y = self.mul_and_sum_mat_pairs(enc_features[0], enc_wt_ic[0])
+            for ic in range(1, len(enc_wt_ic)):
+                enc_y += self.mul_and_sum_mat_pairs(enc_features[ic], enc_wt_ic[ic])
+            enc_y = enc_bias + enc_y
             self.time_dict["HE computation"] += time.process_time() - start
 
             enc_y = self.send_enc_vector(enc_y)
@@ -254,13 +330,11 @@ class HEModel(EncModel):
 
         return enc_y_oc
 
-    def encrypt_fc(self, fc_weight, fc_bias, add_cols_to_hidden=0):
+    def encrypt_fc(self, fc_weight, fc_bias, add_cols=0, return_bytes=False):
         fc_weight = fc_weight.numpy()
         fc_bias = fc_bias.numpy()
 
-
-        if add_cols_to_hidden:
-            fc_weight = np.pad(fc_weight, ((0, 0), (0, add_cols_to_hidden)))
+        fc_weight = np.pad(fc_weight, ((0, 0), (0, add_cols)))
 
         d_out, d_in = fc_weight.shape
         max_len = self.max_len
@@ -281,24 +355,25 @@ class HEModel(EncModel):
         J = math.ceil(d_out / max_len)
         K = math.ceil(d_in / max_len)
 
-        enc_row_channels = []
+        enc_wt_row_channels = []
+        enc_bias_row_channels = []
         for j in range(J):
-            enc_col_channels = []
+            enc_wt_col_channels = []
             for k in range(K):
                 weight = fc_weight[j * max_len:(j + 1) * max_len, k * max_len:(k + 1) * max_len]
-                enc_weight = self.enc_perm_mats(weight, weight.shape[0], left=True)
-                enc_col_channels.append(enc_weight)
+                enc_weight = self.enc_perm_mats(weight, weight.shape[0], left=True, return_bytes=return_bytes)
+                enc_wt_col_channels.append(enc_weight)
+
+            enc_wt_row_channels.append(enc_wt_col_channels)
 
             bias = fc_bias[j * max_len:(j + 1) * max_len, :]
-            enc_bias = self.encrypt_and_send(bias)
+            enc_bias = self.encrypt_and_send(bias, return_bytes=return_bytes)
+            enc_bias_row_channels.append(enc_bias)
 
-            enc_row_channels.append((enc_col_channels, enc_bias))
+        return enc_wt_row_channels, enc_bias_row_channels
 
-        return enc_row_channels
-
-    def preprocess_for_fc(self, matrix, d_out, return_bytes=False, add_rows_to_hidden=0):
-        if add_rows_to_hidden:
-           matrix = np.pad(matrix, ((0, add_rows_to_hidden), (0, 0)))
+    def preprocess_for_fc(self, matrix, d_out, return_bytes=False, add_rows=0):
+        matrix = np.pad(matrix, ((0, add_rows), (0, 0)))
 
         d_in = matrix.shape[0]
         max_len = self.max_len
@@ -315,7 +390,7 @@ class HEModel(EncModel):
             enc_col_channels = []
             for k in range(K):
                 sub_mat = matrix[k*max_len:(k+1)*max_len]
-                enc_mat = self.enc_perm_mats(sub_mat, d_out, left=False, return_bytes=return_bytes)
+                enc_mat = self.enc_perm_mats(sub_mat, min(d_out, self.max_len), left=False, return_bytes=return_bytes)
                 enc_col_channels.append(enc_mat)
             enc_row_channels.append(enc_col_channels)
 
@@ -323,19 +398,21 @@ class HEModel(EncModel):
 
     def sec_fc(self, enc_fc, enc_xs, send_back=True):
 
+        enc_wt_rc, enc_bias_rc = enc_fc
         enc_row_channels = []
-        for j in range(len(enc_fc)):
-            enc_wts, enc_bias = enc_fc[j]
+        for j in range(len(enc_wt_rc)):
+            enc_wt_cc = enc_wt_rc[j]
+            enc_bias = enc_bias_rc[j]
 
-            start = time.process_time()
-            if enc_xs is not None:
-                enc_y = self.he_matmul(enc_wts[0], enc_xs[j][0])
-                for k in range(1, len(enc_wts)):
-                    enc_y += self.he_matmul(enc_wts[k], enc_xs[j][k])
-                enc_y += enc_bias
-            else:
+            if enc_xs is None:
                 enc_y = enc_bias
-            self.time_dict["HE computation"] += time.process_time() - start
+            else:
+                start = time.process_time()
+                enc_y = self.he_matmul(enc_xs[j][0], enc_wt_cc[0])
+                for k in range(1, len(enc_wt_cc)):
+                    enc_y += self.he_matmul(enc_xs[j][k], enc_wt_cc[k])
+                enc_y = enc_bias + enc_y
+                self.time_dict["HE computation"] += time.process_time() - start
 
             if send_back:
                 enc_y = self.send_enc_vector(enc_y)
@@ -391,14 +468,10 @@ class HEModel(EncModel):
         return enc_mats
 
     def he_matmul(self, mat1_ls, mat2_ls):
-        mat_nb = len(mat1_ls)
-
-        enc_y = mat1_ls[0] * mat2_ls[0]
-        for i in range(1, mat_nb):
-            enc_y += mat1_ls[i] * mat2_ls[i]
+        enc_y = self.mul_and_sum_mat_pairs(mat1_ls, mat2_ls)
 
         d_in = int(mat1_ls[0].size() ** 0.5)
-        d_out = mat_nb
+        d_out = len(mat1_ls)
         double_times = int(math.log(d_in / d_out, 2))
 
         if double_times > 0:
@@ -415,31 +488,18 @@ class HEModel(EncModel):
 
         return result
 
-    def encrypt_gru(self, gru_weights, gru_biases, add_cols_to_hidden=0):
-        hidden_size = int(gru_weights.shape[0] / 3)
-        enc_param = []
-        for i in range(3):
-            weight = gru_weights[i*hidden_size:(i+1)*hidden_size]
-            bias = gru_biases[i*hidden_size:(i+1)*hidden_size]
-            enc_param = self.encrypt_fc(weight, bias, add_cols_to_hidden=add_cols_to_hidden)
-            enc_param.append(enc_para)
-
-        return enc_param
-
-    def predict(self, enc_y, mat_len, output_size):
+    def predict(self, enc_y):
 
         y = self.decrypt(enc_y)
-        y = y.reshape(mat_len, mat_len)[:output_size, :self.truth_nb]
-        pred = np.argmax(y, axis=0)
+        y = y.reshape(-1, self.input_nb)[:self.output_size, :self.truth_nb]
+        pred = self.argmax(y)
 
-        enc_pred = self.encrypt(pred)
-        enc_pred = self.send_enc_vector(enc_pred)
+        enc_pred = self.encrypt_and_send(pred)
 
         return enc_pred
 
     def encrypt_truth(self, truth):
-        enc_truth = self.encrypt(truth)
-        enc_truth_bytes = self.send_enc_vector(enc_truth, return_bytes=True)
+        enc_truth_bytes = self.encrypt_and_send(truth, return_bytes=True)
         return enc_truth_bytes
 
     def sec_compare(self, enc_pred, enc_truth):
@@ -456,7 +516,7 @@ class HEModel(EncModel):
 
 
 class HE_MNIST_CNN(HEModel):
-    def __init__(self, input_nb=64):
+    def __init__(self, input_nb=45):
         super(HE_MNIST_CNN, self).__init__()
         self.input_nb = input_nb
         self.input_shape = (-1, 1, 28, 28)
@@ -476,11 +536,16 @@ class HE_MNIST_CNN(HEModel):
         self.fc2_input_size = 64
         self.fc2_output_size = 10
 
-    def init_model_param(self, param):
-        self.enc_param["conv1"] = self.encrypt_conv(param["conv1.weight"], param["conv1.bias"], self.conv1_kernel_len,
-                                                    self.conv1_windows_nb)
-        self.enc_param["fc1"] = self.encrypt_fc(param["fc1.weight"], param["fc1.bias"])
-        self.enc_param["fc2"] = self.encrypt_fc(param["fc2.weight"], param["fc2.bias"])
+        self.output_size = 10
+
+    def init_model_param(self, param, return_bytes=False):
+        self.enc_param = {}
+        self.enc_param["conv1.weight"], self.enc_param["conv1.bias"] = self.encrypt_conv(
+            param["conv1.weight"], param["conv1.bias"], self.conv1_windows_nb, return_bytes=return_bytes)
+        self.enc_param["fc1.weight"], self.enc_param["fc1.bias"] = self.encrypt_fc(
+            param["fc1.weight"], param["fc1.bias"], return_bytes=return_bytes)
+        self.enc_param["fc2.weight"], self.enc_param["fc2.bias"] = self.encrypt_fc(
+            param["fc2.weight"], param["fc2.bias"], return_bytes=return_bytes)
 
     def encrypt_input(self, x):
         x = x.reshape(self.input_nb, self.conv1_in_channel_nb, self.image_len, self.image_len)
@@ -495,16 +560,16 @@ class HE_MNIST_CNN(HEModel):
 
     def forward(self, enc_x, enc_truth):
 
-        enc_y_channel = self.sec_conv(self.enc_param["conv1"], enc_x)
+        enc_y_channel = self.sec_conv((self.enc_param["conv1.weight"], self.enc_param["conv1.bias"]), enc_x)
         x = self.sec_square(enc_y_channel, self.fc1_input_size)
 
         enc_x = self.preprocess_for_fc(x, self.fc1_output_size)
-        enc_y = self.sec_fc(self.enc_param["fc1"], enc_x)
+        enc_y = self.sec_fc((self.enc_param["fc1.weight"], self.enc_param["fc1.bias"]), enc_x)
         x = self.sec_square(enc_y, self.fc1_output_size)
 
         enc_x = self.preprocess_for_fc(x, self.fc2_output_size)
-        enc_y = self.sec_fc(self.enc_param["fc2"], enc_x)
-        enc_pred = self.predict(enc_y, self.fc2_input_size, self.fc2_output_size)
+        enc_y = self.sec_fc((self.enc_param["fc2.weight"], self.enc_param["fc2.bias"]), enc_x)
+        enc_pred = self.predict(enc_y)
 
         return self.sec_compare(enc_pred, enc_truth)
 
@@ -523,16 +588,23 @@ class HE_mRNA_RNN(HEModel):
 
         self.fc_input_size = 32
         self.fc_output_size = 2
-        self.fc_channel_nb = 1
-        self.fc_residual_nb = 0
 
-    def init_model_param(self, param):
+        self.output_size = 2
+
+    def init_model_param(self, param, return_bytes=False):
+        self.enc_param = {}
         enc_param = self.enc_param
-        enc_param["gru_ir"], enc_param["gru_iz"], enc_param["gru_in"] = self.encrypt_gru(param["rnn.weight_ih_l0"],
-                                                                                         param["rnn.bias_ih_l0"])
-        enc_param["gru_hr"], enc_param["gru_hz"], enc_param["gru_hn"] = self.encrypt_gru(param["rnn.weight_hh_l0"],
-            param["rnn.bias_hh_l0"], add_cols_to_hidden=self.gru_input_size - self.gru_output_size)
-        enc_param["fc"] = self.encrypt_fc(param["fc.weight"], param["fc.bias"])
+        (enc_param["gru_ir.weight"], enc_param["gru_ir.bias"]), (enc_param["gru_iz.weight"], enc_param["gru_iz.bias"]), \
+        (enc_param["gru_in.weight"], enc_param["gru_in.bias"]) \
+            = self.encrypt_gru(param["rnn.weight_ih_l0"], param["rnn.bias_ih_l0"], return_bytes=return_bytes)
+
+        (enc_param["gru_hr.weight"], enc_param["gru_hr.bias"]), (enc_param["gru_hz.weight"], enc_param["gru_hz.bias"]), \
+        (enc_param["gru_hn.weight"], enc_param["gru_hn.bias"]) \
+            = self.encrypt_gru(param["rnn.weight_hh_l0"], param["rnn.bias_hh_l0"],
+                               add_cols_to_hidden=self.gru_input_size - self.gru_output_size, return_bytes=return_bytes)
+
+        enc_param["fc.weight"], enc_param["fc.bias"] = self.encrypt_fc(param["fc.weight"], param["fc.bias"],
+                                                                              return_bytes=return_bytes)
 
     def encrypt_input(self, x):
         x = x.reshape(self.input_nb, self.seq_len, self.gru_input_size)
@@ -555,30 +627,34 @@ class HE_mRNA_RNN(HEModel):
         return x
 
     def compute_enc_gru_r(self, x, h):
-        enc_r = self.sec_fc(self.enc_param["gru_ir"], x, send_back=False)[0]
-        enc_r += self.sec_fc(self.enc_param["gru_hr"], h, send_back=False)[0]
+        enc_r = self.sec_fc((self.enc_param["gru_ir.weight"], self.enc_param["gru_ir.bias"]), x, send_back=False)[0]
+        enc_r += self.sec_fc((self.enc_param["gru_hr.weight"], self.enc_param["gru_hr.bias"]), h, send_back=False)[0]
         enc_r = self.send_enc_vector(enc_r)
         r = self.sec_sigmoid(enc_r)
-        enc_r = self.encrypt(r)
-        enc_r = self.send_enc_vector(enc_r)
+        enc_r = self.encrypt_and_send(r)
         return enc_r
 
     def compute_enc_gru_z(self, x, h):
-        enc_z = self.sec_fc(self.enc_param["gru_iz"], x, send_back=False)[0]
-        enc_z += self.sec_fc(self.enc_param["gru_hz"], h, send_back=False)[0]
+        enc_z = self.sec_fc((self.enc_param["gru_iz.weight"], self.enc_param["gru_iz.bias"]), x, send_back=False)[0]
+        enc_z += self.sec_fc((self.enc_param["gru_hz.weight"], self.enc_param["gru_hz.bias"]), h, send_back=False)[0]
         enc_z = self.send_enc_vector(enc_z)
         z = self.sec_sigmoid(enc_z)
-        enc_z = self.encrypt(z)
-        enc_z = self.send_enc_vector(enc_z)
+        enc_z = self.encrypt_and_send(z)
         return enc_z
 
     def compute_enc_gru_n(self, x, h, r):
-        enc_n = self.sec_fc(self.enc_param["gru_in"], x, send_back=False)[0]
-        enc_n += self.sec_fc(self.enc_param["gru_hn"], h, send_back=False)[0] * r
+        enc_n = self.sec_fc((self.enc_param["gru_in.weight"], self.enc_param["gru_in.bias"]), x, send_back=False)[0]
+        enc_n_ = self.sec_fc((self.enc_param["gru_hn.weight"], self.enc_param["gru_hn.bias"]), h, send_back=False)[0]
+
+        if not (h is None) and self.aggregated:
+            enc_n_ = self.send_enc_vector(enc_n_)
+            n_ = self.decrypt(enc_n_)
+            enc_n_ = self.encrypt_and_send(n_)
+
+        enc_n += enc_n_ * r
         enc_n = self.send_enc_vector(enc_n)
         n = self.sec_tanh(enc_n)
-        enc_n = self.encrypt(n)
-        enc_n = self.send_enc_vector(enc_n)
+        enc_n = self.encrypt_and_send(n)
 
         return enc_n
 
@@ -590,8 +666,8 @@ class HE_mRNA_RNN(HEModel):
         enc_h = self.send_enc_vector(enc_h)
         return enc_h
 
-    def sec_rnn_gru(self, enc_x_seq, input_size, hidden_size, enc_h_fc=None, enc_h_hardmard=None):
-        shape = [input_size, input_size]
+    def sec_rnn_gru(self, enc_x_seq, enc_h_fc=None, enc_h_hardmard=None):
+        dec_size = min(self.gru_input_size, self.max_len)
         for i in range(self.seq_len):
             enc_x = enc_x_seq[i]
             enc_r = self.compute_enc_gru_r(enc_x, enc_h_fc)
@@ -601,36 +677,36 @@ class HE_mRNA_RNN(HEModel):
 
             if i < self.seq_len - 1:
                 h = self.decrypt(enc_h_hardmard)
-                enc_h_hardmard = self.encrypt(h)
-                enc_h_hardmard = self.send_enc_vector(enc_h_hardmard)
-                h = h.reshape(shape)[:hidden_size, :self.input_nb]
-                enc_h_fc = self.preprocess_for_fc(h, h.shape[0], add_rows_to_hidden=input_size-hidden_size)
+                enc_h_hardmard = self.encrypt_and_send(h)
+                h = h.reshape(dec_size, dec_size)[:self.gru_output_size, :self.input_nb]
+                enc_h_fc = self.preprocess_for_fc(h, h.shape[0], add_rows=self.gru_input_size-self.gru_output_size)
 
-        return self.decrypt(enc_h_hardmard).reshape(shape)[:hidden_size, :self.input_nb]
+        h = self.decrypt(enc_h_hardmard).reshape(dec_size, dec_size)[:self.gru_output_size, :self.input_nb]
+        return h
 
     def forward(self, enc_x_seq, enc_truth):
 
-        h = self.sec_rnn_gru(enc_x_seq, self.gru_input_size, self.gru_output_size)
+        h = self.sec_rnn_gru(enc_x_seq)
 
         enc_x = self.preprocess_for_fc(h, self.fc_output_size)
-        enc_y = self.sec_fc(self.enc_param["fc"], enc_x)
-        enc_pred = self.predict(enc_y, self.fc_input_size, self.fc_output_size)
+        enc_y = self.sec_fc((self.enc_param["fc.weight"], self.enc_param["fc.bias"]), enc_x)
+        enc_pred = self.predict(enc_y)
 
         return self.sec_compare(enc_pred, enc_truth)
 
-
-class HE_AGNEWS_Logi(HEModel):
-    def __init__(self, input_nb=64):
-        super(HE_AGNEWS_Logi, self).__init__()
+class HE_Logi(HEModel):
+    def __init__(self, input_nb, input_size, output_size):
+        super(HE_Logi, self).__init__()
         self.input_nb = input_nb
-        self.input_shape = (-1, 300)
-        self.n_processes = 10
+        self.input_shape = (-1, input_size)
 
-        self.fc_input_size = 300
-        self.fc_output_size = 4
+        self.fc_input_size = input_size
+        self.fc_output_size = output_size
 
-    def init_model_param(self, param):
-        self.enc_param["fc"] = self.encrypt_fc(param["fc.weight"], param["fc.bias"])
+    def init_model_param(self, param, return_bytes=False):
+        self.enc_param = {}
+        self.enc_param["fc.weight"], self.enc_param["fc.bias"] = self.encrypt_fc(param["fc.weight"], param["fc.bias"],
+                                                                                 return_bytes=return_bytes)
 
     def encrypt_input(self, x):
         x = x.reshape(self.input_shape)
@@ -638,33 +714,103 @@ class HE_AGNEWS_Logi(HEModel):
         return self.preprocess_for_fc(x, self.fc_output_size, return_bytes=True)
 
     def forward(self, enc_x, enc_truth):
-        enc_y = self.sec_fc(self.enc_param["fc"], enc_x)
-        enc_pred = self.predict(enc_y, self.max_len, self.fc_output_size)
+        enc_y = self.sec_fc((self.enc_param["fc.weight"], self.enc_param["fc.bias"]), enc_x)
+        enc_pred = self.predict(enc_y)
 
         return self.sec_compare(enc_pred, enc_truth)
 
-class HE_BANK_Logi(HEModel):
-    def __init__(self, input_nb=48):
-        super(HE_BANK_Logi, self).__init__()
+
+class HE_BANK_Logi(HE_Logi):
+    def __init__(self, input_nb=45):
+        self.input_shape = (-1, 48)
+        self.output_size = 2
+        super(HE_BANK_Logi, self).__init__(input_nb, self.input_shape[1], self.output_size)
+        self.n_processes = 10
+
+class HE_AGNEWS_Logi(HE_Logi):
+    def __init__(self, input_nb=45):
+        self.input_shape = (-1, 300)
+        self.output_size = 4
+        super(HE_AGNEWS_Logi, self).__init__(input_nb, self.input_shape[1], self.output_size)
+        self.n_processes = 10
+
+class HE_DNN(HEModel):
+    def __init__(self, input_nb, layer_nb):
+        super(HE_DNN, self).__init__()
         self.input_nb = input_nb
+        self.layer_nb = layer_nb
+
+    def init_model_param(self, param, return_bytes=False):
+        self.enc_param = {}
+        enc_param = self.enc_param
+        enc_param["input.weight"], enc_param["input.bias"] = self.encrypt_fc(param["input_layer.weight"],
+                                                                             param["input_layer.bias"],
+                                                                             return_bytes=return_bytes)
+        for l in range(self.layer_nb):
+            enc_param[f"hidden.{l}.weight"], enc_param[f"hidden.{l}.bias"] = self.encrypt_fc(
+                param[f"hidden_layers.{l * 2}.weight"], param[f"hidden_layers.{l * 2}.bias"], return_bytes=return_bytes)
+
+        enc_param["output.weight"], enc_param["output.bias"] = self.encrypt_fc(param["output_layer.weight"],
+                                                                             param["output_layer.bias"],
+                                                                             return_bytes=return_bytes)
+
+    def encrypt_input(self, x):
+        x = x.reshape(self.input_shape)
+        x = np.transpose(x, (1, 0))
+        return self.preprocess_for_fc(x, self.hidden_layer_size, return_bytes=True)
+
+    def sec_relu(self, enc_y):
+        y = self.decrypt(enc_y).reshape(-1, self.input_nb)[:self.hidden_layer_size]
+        x = self.relu(y)
+        return x
+
+    def forward(self, enc_x, enc_truth):
+        enc_y = self.sec_fc((self.enc_param["input.weight"], self.enc_param["input.bias"]), enc_x)
+        x = self.sec_relu(enc_y)
+
+        for l in range(self.layer_nb):
+            enc_x = self.preprocess_for_fc(x, self.hidden_layer_size)
+            enc_y = self.sec_fc((self.enc_param[f"hidden.{l}.weight"], self.enc_param[f"hidden.{l}.bias"]), enc_x)
+            x = self.sec_relu(enc_y)
+
+        enc_x = self.preprocess_for_fc(x, self.output_size)
+        enc_y = self.sec_fc((self.enc_param["output.weight"], self.enc_param["output.bias"]), enc_x)
+        enc_pred = self.predict(enc_y)
+
+        return self.sec_compare(enc_pred, enc_truth)
+
+class HE_BANK_DNN(HE_DNN):
+    def __init__(self, input_nb=45, layer_nb=5):
+        super(HE_BANK_DNN, self).__init__(input_nb=input_nb, layer_nb=layer_nb)
         self.input_shape = (-1, 48)
         self.n_processes = 10
 
-        self.fc_input_size = 48
-        self.fc_output_size = 2
+        self.hidden_layer_size = 48
+        self.output_size = 2
 
-        self.enc_param = {}
+class HE_AGNEWS_DNN(HE_DNN):
+    def __init__(self, input_nb=45, layer_nb=5):
+        super(HE_AGNEWS_DNN, self).__init__(input_nb=input_nb, layer_nb=layer_nb)
+        self.input_shape = (-1, 300)
+        self.n_processes = 10
 
-    def init_model_param(self, param):
-        self.enc_param["fc"] = self.encrypt_fc(param["fc.weight"], param["fc.bias"])
+        self.hidden_layer_size = 64
+        self.output_size = 4
 
-    def encrypt_input(self, x):
-        x = x.reshape(self.input_shape)
-        x = np.transpose(x, (1, 0))
-        return self.preprocess_for_fc(x, self.fc_output_size, return_bytes=True)
+class HE_MNIST_DNN(HE_DNN):
+    def __init__(self, input_nb=45, layer_nb=5):
+        super(HE_MNIST_DNN, self).__init__(input_nb=input_nb, layer_nb=layer_nb)
+        self.input_shape = (-1, 784)
+        self.n_processes = 10
 
-    def forward(self, enc_x, enc_truth):
-        enc_y = self.sec_fc(self.enc_param["fc"], enc_x)
-        enc_pred = self.predict(enc_y, self.fc_input_size, self.fc_output_size)
+        self.hidden_layer_size = 64
+        self.output_size = 10
 
-        return self.sec_compare(enc_pred, enc_truth)
+class HE_mRNA_DNN(HE_DNN):
+    def __init__(self, input_nb=45, layer_nb=5):
+        super(HE_mRNA_DNN, self).__init__(input_nb=input_nb, layer_nb=layer_nb)
+        self.input_shape = (-1, 640)
+        self.n_processes = 10
+
+        self.hidden_layer_size = 64
+        self.output_size = 2

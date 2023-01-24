@@ -2,6 +2,11 @@ import itertools
 import math
 import cvxpy as cp
 import numpy as np
+import torch
+import torch.nn as nn
+from scipy.special import comb
+import pandas as pd
+
 
 
 def make_all_subsets(list_of_members):
@@ -67,16 +72,19 @@ class ShapleyValue:
 
         self.svs = sv_dict.copy()
 
-    def calculate_svs_group_testing(self, beta_mat, model_subsets_ls, params):
-        beta_mat = np.array(beta_mat)
+    def calculate_svs_group_testing(self, beta_mat, model_ls, params):
         N = len(self.list_of_members)
         T = beta_mat.shape[0]
+        id_index_df = pd.DataFrame({
+            "Index": np.arange(N),
+            "ID": sorted(self.list_of_members)
+        })
 
         tiled_beta_mat = np.tile(beta_mat, (1, N)).reshape((T, N, N))
         transposed_tiled_beta_mat = np.transpose(tiled_beta_mat, (0, 2, 1))
 
         diff_beta_mat = transposed_tiled_beta_mat - tiled_beta_mat
-        utilities = np.array([self.mu[model_subsets_ls[t]] for t in range(T)]).reshape((T, 1, 1))
+        utilities = np.array([self.mu[model_ls[t]] for t in range(T)]).reshape((T, 1, 1))
         diff_u_mat = np.sum(utilities * diff_beta_mat, axis=0) * params["Z"] / T
 
         svs_cvxpy = cp.Variable((N))
@@ -91,12 +99,67 @@ class ShapleyValue:
         prob.solve()
         svs = svs_cvxpy.value
 
-        i = 0
-        for member in sorted(self.list_of_members):
-            self.svs[member] = svs[0]
-            i += 1
+        for i in range(N):
+            cid = id_index_df[id_index_df["Index"] == i]["ID"].item()
+            self.svs[cid] = svs[i]
+
+    def calculate_svs_kernel_shap(self, samples):
+        phi_init = self.mu[frozenset()]
+        phi_all = self.mu[self.list_of_members]
+        nclients = len(self.list_of_members)
+        id_index_df = pd.DataFrame({
+            "Index": np.arange(nclients),
+            "ID": sorted(self.list_of_members)
+        })
 
 
+        z_matrix, y_vec, weights = [], [], []
+        for cids, weight in samples.items():
+            indices = id_index_df[id_index_df["ID"].isin(cids)]["Index"].tolist()
+            z = np.zeros(nclients)
+            z[indices] = 1.0
+            z_matrix.append(z)
+            y = self.mu[frozenset(cids)]
+            y_vec.append(y)
+            weight = weight ** 0.5
+            weights.append(weight)
+
+        z_matrix = np.vstack(z_matrix)
+        y_vec = np.array(y_vec)
+        weights = np.array(weights)
+
+        A = (z_matrix[:, :-1] - z_matrix[:, -1].reshape(-1, 1)) * weights.reshape(-1, 1)
+        y_vec_ = (y_vec - z_matrix[:, -1] * phi_all - (1 - z_matrix[:, -1]) * phi_init) * weights
+
+        # print(A)
+        # print(y_vec_)
+
+        phi_vec = np.linalg.lstsq(A, y_vec_, rcond=None)[0]
+        phi_vec = np.append(phi_vec, phi_all - phi_vec.sum() - phi_init)
+
+        for i in range(nclients):
+            cid = id_index_df[id_index_df["Index"] == i]["ID"].item()
+            self.svs[cid] = phi_vec[i]
+
+
+
+
+
+# class KernelShap(nn.Module):
+#     def __init__(self, n_clients):
+#         super(KernelShap, self).__init__()
+#         self.M = n_clients
+#         self.linear = nn.Linear(self.M, 1)
+#
+#     def kernel(z_):
+#         count_ones = z_[z_ == 1].sum(dim=1)
+#         pi = (self.M - 1) / comb(self.M, count_ones) / count_ones / (self.M - count_ones)
+#         return pi
+#
+#     def forward(self, z_):
+#         return self.linear(z_)
+#
+#     def loss(self, z_, y):
 
 
 
