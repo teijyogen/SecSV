@@ -68,6 +68,21 @@ class HybridModel(EncModel):
 
         return plain_vec
 
+    def preprocess_shares(self, share1, share2):
+        start = time.process_time()
+        size = share1.shape[0]
+        share1 = share1.reshape(size, -1)
+        share1 = np.pad(share1, ((0, self.input_nb - size), (0, 0))).reshape(self.input_nb, -1)
+        processed_share1 = self.preprocess_input(share1)
+        self.time_dict["repeated"] += time.process_time() - start
+
+        share2 = share2.reshape(size, -1)
+        share2 = np.pad(share2, ((0, self.input_nb - size), (0, 0))).reshape(self.input_nb, -1)
+        processed_share2 = self.preprocess_input(share2)
+
+        return processed_share1, processed_share2
+
+
     def preprocess_for_conv(self, x, windows_nb, kernel_len, stride, pad_width=((0, 0), (0, 0), (0, 0))):
         return super().preprocess_for_conv(x, windows_nb, kernel_len, stride, pad_width, encryption=False)
 

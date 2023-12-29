@@ -191,18 +191,7 @@ class SecSV:
         self.time_dict_data_preparation[cid] = time_dict
 
     def preprocess_test_data(self, feature_share1, feature_share2):
-        start = time.process_time()
-        size = feature_share1.shape[0]
-        feature_share1 = feature_share1.reshape(size, -1)
-        feature_share1 = np.pad(feature_share1, ((0, self.batch_size - size), (0, 0))).reshape(self.batch_size, -1)
-        processed_feature_share1 = self.hybridmodel.preprocess_input(feature_share1)
-        self.time_dict["repeated"] += time.process_time() - start
-
-        feature_share2 = feature_share2.reshape(size, -1)
-        feature_share2 = np.pad(feature_share2, ((0, self.batch_size - size), (0, 0))).reshape(self.batch_size, -1)
-        processed_feature_share2 = self.hybridmodel.preprocess_input(feature_share2)
-
-        return processed_feature_share1, processed_feature_share2
+        return self.hybridmodel.preprocess_shares(feature_share1, feature_share2)
 
     def find_mixed_batches(self, mixed_indices, local):
         max_n_clients_in_batch = len(self.cids) - 1 - 1 * (not self.hybridmodel.linear) - 1 * local
@@ -536,7 +525,7 @@ class SecSV:
         start = time.process_time()
         self.hybridmodel.init_context()
         self.shares_loader()
-        time_for_load_context_and_data = time.process_time() - start
+        time_for_load_context_and_data = time.process_time() - start - time_dict["repeated"]
 
         self.find_subsets_for_eval(rnd)
         model_dict, correct_samples_dict, acc_dict = self.eval_local_models(rnd)
@@ -551,6 +540,7 @@ class SecSV:
                                              rnd, skip=True)
 
     def sv_eval_one_rnd_aggr_models(self, model_dict, acc_dict, correct_samples_dict, time_dict, rnd, skip=False):
+
         self.hybridmodel.time_dict = time_dict
         start = time.process_time()
         correct_samples_dict, new_acc_dict, naive_samples_dict, skipped_samples_dict = self.eval_aggr_models(
@@ -981,7 +971,7 @@ class SecSV_Skip_Effect(SecSV):
 
         start = time.process_time()
         self.shares_loader()
-        time_for_shares_loading = time.process_time() - start
+        time_for_shares_loading = time.process_time() - start - time_dict["repeated"]
         self.find_subsets_for_eval(rnd)
         model_dict, correct_samples_dict, acc_dict = self.eval_local_models(rnd, time_dict)
         time_dict["parallel"] += time.process_time() - start

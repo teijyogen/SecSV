@@ -61,12 +61,45 @@ class SecretSV:
         time_dict["repeated"] = 0.0
         self.ssmodel.time_dict = time_dict
 
-    def secretly_share_data_parallel(self):
-        print("\nSecretly share test data")
-        self.parallelize(self.secretly_share_data, [(cid,) for cid in self.cids])
+    def secretly_share_models_and_data_parallel(self):
+        print("\nSecretly share local models and test data")
+        self.parallelize(self.secretly_share_models_and_data, [(cid,) for cid in self.cids])
         for cid in self.clients.data.keys():
             self.test_data_shares.extend(self.data_shares_dict[cid])
         del self.data_shares_dict
+
+    def secretly_share_models_and_data(self, cid):
+        set_random_seed((os.getpid() * int(time.time())) % 123456789)
+        self.secretly_share_models(cid)
+        self.secretly_share_data(cid)
+
+    def secretly_share_models(self, cid):
+        time_dict = {}
+        self.init_time_dict(time_dict)
+
+        start = time.process_time()
+        client = self.clients.find_client(cid)
+        shared_local_models = {}
+
+        for rnd in range(self.T):
+            local_model = client.get_model(rnd)
+            model_param = local_model.state_dict()
+
+            # ssmodel = copy.deepcopy(self.ssmodel)
+            # ssmodel.time_dict = time_dict
+            # ssmodel.init_model_param(model_param)
+            # shared_local_models[rnd] = ssmodel.model_shares
+
+            self.ssmodel.init_model_param(model_param)
+            shared_local_models[rnd] = self.ssmodel.model_shares
+            self.ssmodel.model_shares = {}
+
+        time_dict["parallel"] += time.process_time() - start + time_dict["communication"] - time_dict["repeated"]
+        time_dict["sequential"] = time_dict["parallel"]
+
+        self.shared_local_models_dict[cid] = shared_local_models
+        self.time_dict_model_preparation[cid] = time_dict
+
 
     def secretly_share_data(self, cid):
         time_dict = {}
@@ -82,10 +115,10 @@ class SecretSV:
             truth_shares = self.ssmodel.preprocess_truth(truth.numpy())
             data_shares.append((feature_shares, truth_shares))
 
-        self.data_shares_dict[cid] = data_shares
-
         time_dict["parallel"] += time.process_time() - start + time_dict["communication"] - time_dict["repeated"]
         time_dict["sequential"] = time_dict["parallel"]
+
+        self.data_shares_dict[cid] = data_shares
         self.time_dict_data_preparation[cid] = time_dict
 
     def update_ssv(self, sv_dict, rnd):
@@ -129,8 +162,10 @@ class SecretSV:
     def save_stat(self, filename, suffix=None):
         data = {"test size": self.test_size, "ssv": self.ssv_dict, "fsv": self.fsv_dict,
                 "time for main process": self.time_dict,
-                "time for secure testing": self.time_dict_secure_testing.copy(),
-                "time for data preparation": self.time_dict_data_preparation.copy()}
+                "time for data preparation": self.time_dict_data_preparation.copy(),
+                "time for model preparation": self.time_dict_model_preparation.copy(),
+                "time for secure testing": self.time_dict_secure_testing.copy()
+                }
 
         if suffix:
             folder = "stat/" + self.dir + suffix + "/"
@@ -183,11 +218,9 @@ class SecretSV:
             init_model = self.clients.get_init_model()
 
         model_param = init_model.state_dict()
-        ssmodel = copy.deepcopy(self.ssmodel)
-        ssmodel.time_dict = self.time_dict
-        ssmodel.init_model_param(model_param)
+        self.ssmodel.init_model_param(model_param)
 
-        correct_nb = self.eval(ssmodel)
+        correct_nb = self.eval(self.ssmodel)
         self.init_acc = correct_nb / self.test_size
 
     def sv_eval_one_rnd(self, rnd):
@@ -205,24 +238,29 @@ class SecretSV:
 
         for client in tqdm(sel_clients.values()):
             subset = frozenset((client.id,))
-            local_model = client.get_model(rnd)
-            model_param = local_model.state_dict()
+            model_shares = self.shared_local_models_dict[client.id][rnd]
 
-            ssmodel = copy.deepcopy(self.ssmodel)
-            ssmodel.time_dict = time_dict
-            ssmodel.init_model_param(model_param)
-            correct_nb = self.eval(ssmodel)
+            # ssmodel = copy.deepcopy(self.ssmodel)
+            # ssmodel.time_dict = time_dict
+            # ssmodel.model_shares = model_shares
+            # correct_nb = self.eval(ssmodel)
+
+            self.ssmodel.model_shares = model_shares
+            correct_nb = self.eval(self.ssmodel)
             acc_dict[subset] = correct_nb / self.test_size
-            model_dict[client.id] = (ssmodel.model_shares, client.train_size)
+            model_dict[client.id] = (model_shares, client.train_size)
+            self.ssmodel.model_shares = {}
 
         for subset in tqdm(aggr_subsets):
-            ssmodel = copy.deepcopy(self.ssmodel)
-            ssmodel.time_dict = time_dict
             param_size_pairs = [model_dict[cid] for cid in list(subset)]
-            ssmodel.aggregate(param_size_pairs)
-
-            correct_nb = self.eval(ssmodel)
+            # ssmodel = copy.deepcopy(self.ssmodel)
+            # ssmodel.time_dict = time_dict
+            # ssmodel.aggregate(param_size_pairs)
+            # correct_nb = self.eval(ssmodel)
+            self.ssmodel.aggregate(param_size_pairs)
+            correct_nb = self.eval(self.ssmodel)
             acc_dict[subset] = correct_nb / self.test_size
+            self.ssmodel.model_shares = {}
 
         time_dict["parallel"] += time.process_time() - start + time_dict["communication"] - time_dict["repeated"]
         time_dict["sequential"] = time_dict["parallel"]
@@ -233,21 +271,25 @@ class SecretSV:
     def init_shared_dict(self):
         manager = mp.Manager()
 
+        self.shared_local_models_dict = manager.dict()
         self.time_dict_data_preparation = manager.dict()
+        self.time_dict_model_preparation = manager.dict()
         self.data_shares_dict = manager.dict()
         self.time_dict_secure_testing = manager.dict()
         self.acc_dict = manager.dict()
 
     def clear_shared_dicts(self):
+        self.shared_local_models_dict = self.shared_local_models_dict.copy
         self.time_dict_data_preparation = self.time_dict_data_preparation.copy()
-        self.acc_dict = self.acc_dict.copy()
+        self.time_dict_model_preparation = self.time_dict_model_preparation.copy()
         self.time_dict_secure_testing = self.time_dict_secure_testing.copy()
+        self.acc_dict = self.acc_dict.copy()
 
     def setup(self):
         print("Set up environment")
         start = time.process_time()
         self.init_shared_dict()
-        self.secretly_share_data_parallel()
+        self.secretly_share_models_and_data_parallel()
         self.eval_init_model()
         self.time_dict["parallel"] += time.process_time() - start + self.time_dict["communication"] - self.time_dict["repeated"]
         self.time_dict["sequential"] = self.time_dict["parallel"]
@@ -274,6 +316,8 @@ class SecretSV:
         print(self.time_dict)
         print("\ntime for data preparation")
         print(self.time_dict_data_preparation)
+        print("\ntime for model preparation")
+        print(self.time_dict_model_preparation)
         print("\ntime for secure testing")
         print(self.time_dict_secure_testing)
 
